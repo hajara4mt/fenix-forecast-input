@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic
+degreedays
+python-dotenv
+azure-storage-file-datalake
+pandas
+pyarrow
