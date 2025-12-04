@@ -4,15 +4,14 @@ from fastapi import FastAPI
 from app.routes import building , deliverypoint ,invoice , usagedata , degreedays   # importe le router qu'on vient de créer
 
 app = FastAPI(
-    title="FenixForecast Test API",
+    title="FenixForecast Test API-INPUT",
     version="1.0.0",
 )
 
 
-@app.get("/statut")
-def health():
-    return {"status": "ok"}
-
+@app.get("/")
+def root():
+    return {"message": "API Fenix Forecast -INPUT- -Préprod- en ligne "}
 
 
 # on "branche" le router building
