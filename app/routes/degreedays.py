@@ -1,12 +1,15 @@
 # app/routers/degreedays.py
 
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Query, HTTPException , BackgroundTasks
 from datetime import date, datetime, timezone
 from typing import List, Dict
 from collections import defaultdict
-
+from app.jobs.degreedays_silver import run_degreedays_silver_job
 from app.degreedays_client import get_monthly_hdd_cdd
 from app.azure_datalake import write_json_to_bronze
+from app.jobs.degreedays_silver import ensure_degreedays_for_station
+from app.jobs.degreedays_silver import load_degreedays_silver
+
 
 router = APIRouter(
     prefix="/degreedays",
@@ -14,11 +17,33 @@ router = APIRouter(
 )
 
 
+@router.get("/all")
+def get_all_degreedays():
+    """
+    Retourne toutes les lignes de la silver degreedays :
+    - station_id
+    - year, month, period_month
+    - indicator (hdd/cdd)
+    - basis
+    - value
+    - received_at
+    """
+    df = load_degreedays_silver()
+
+    if df.empty:
+        return []
+
+    # On renvoie chaque ligne comme un dict JSON
+    return df.to_dict(orient="records")
+
+
 @router.get("/monthly")
 def get_monthly(
     station_id: str = Query(..., description="Code station météo, ex: LFML"),
     start: date = Query(..., description="Date de début au format YYYY-MM-DD"),
     end: date = Query(..., description="Date de fin au format YYYY-MM-DD"),
+    background_tasks: BackgroundTasks = None,
+
 ):
    
  ###   Appelle l'API DegreeDays pour une station et une période,
@@ -85,5 +110,11 @@ def get_monthly(
             data=payload,
         )
 
-    # 4) On renvoie les données comme avant
+        # 4) Lancer le job bronze -> silver en tâche de fond
+    if background_tasks is not None:
+        background_tasks.add_task(run_degreedays_silver_job)
+    
+   
+
+    # 5) On renvoie les données comme avant
     return data

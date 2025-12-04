@@ -1,14 +1,18 @@
 # app/routers/building.py
-from fastapi import APIRouter
+from fastapi import APIRouter ,  BackgroundTasks , HTTPException , status
+
 from uuid import uuid4
 from datetime import datetime, timezone
-from fastapi import HTTPException , status
 from app.models import BuildingCreate, BuildingCreatedResponse, BuildingRead
 from app.azure_datalake import write_json_to_bronze , delete_file_from_bronze
 import pandas as pd
 from app.azure_datalake import get_datalake_client
 from config import AZURE_STORAGE_FILESYSTEM
 import re
+from app.jobs.building_silver import run_building_silver_job
+from app.jobs.degreedays_silver import ensure_degreedays_for_station
+
+
 
 
 
@@ -29,7 +33,7 @@ def initialize_building_index_from_bronze() -> int:
         print(f"⚠️ Impossible de lister bronze/building : {e}")
         return 0
 
-    pattern = re.compile(r"building_(\d{6})\.json")
+    pattern = re.compile(r"building_(\d{3})\.json")
 
     for p in paths:
         if p.is_directory:
@@ -83,6 +87,20 @@ def save_building_silver(df):
     file.upload_data(data, overwrite=True)
 
 
+## chemin de test de presence d'un id building dans la silver 
+def building_exists_in_silver(building_id: str) -> bool:
+    """
+    Retourne True si id_building_primaire existe dans la silver building.
+    """
+    try:
+        df_building = load_building_silver()
+    except Exception:
+        return False
+
+    if df_building.empty or "id_building_primaire" not in df_building.columns:
+        return False
+
+    return building_id in df_building["id_building_primaire"].values
 
 
 
@@ -95,7 +113,7 @@ current_building_index = 0
 
 ## Création de batiment et mise en place d'un ID_primaire 
 @router.put("/create", status_code=201)
-def create_building(payload: BuildingCreate):
+def create_building(payload: BuildingCreate, background_tasks: BackgroundTasks):
     global current_building_index
 
     # 1) Générer un id primaire
@@ -116,6 +134,15 @@ def create_building(payload: BuildingCreate):
         file_name=f"{building_id}.json",
         data=raw_dict,
     )
+    # 4) Lancer le job bronze -> silver en tâche de fond
+    #background_tasks.add_task(run_building_silver_job)
+
+    if payload.weather_station and payload.reference_period_start:
+        background_tasks.add_task(
+            ensure_degreedays_for_station,
+            station_id=payload.weather_station,
+            ref_start=payload.reference_period_start,
+        )
 
     # 4) Réponse API
     return {

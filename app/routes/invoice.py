@@ -1,11 +1,13 @@
 import re , io , pandas as pd
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status , BackgroundTasks
 from datetime import datetime, timezone
 from typing import List
 
 from app.models import InvoiceCreate , InvoiceRead
 from app.azure_datalake import write_json_to_bronze, get_datalake_client , delete_file_from_bronze
 from config import AZURE_STORAGE_FILESYSTEM
+from app.jobs.invoice_silver import run_invoice_silver_job
+from app.routes.deliverypoint import deliverypoint_exists_in_silver
 
 
 SILVER_INVOICE_PATH = "silver/invoice/invoice.parquet"
@@ -93,7 +95,7 @@ def _save_invoice_silver_df(df: pd.DataFrame) -> None:
     file_client.upload_data(buffer.read(), overwrite=True)
 
 @router.put("/create", status_code=status.HTTP_201_CREATED)
-def create_invoice(payload: InvoiceCreate):
+def create_invoice(payload: InvoiceCreate , background_tasks: BackgroundTasks):
 
     try:
         building_suffix, dp_suffix = parse_deliverypoint_id(
@@ -123,7 +125,10 @@ def create_invoice(payload: InvoiceCreate):
         entity="invoice",
         file_name=f"{invoice_id}.json",
         data=raw_dict,
-    )
+    )  
+
+    # 🔁 lancer le job bronze -> silver en tâche de fond
+    background_tasks.add_task(run_invoice_silver_job)
 
     return {
         "result": True,
@@ -225,6 +230,28 @@ def delete_invoice(invoice_id_primaire: str):
 
 @router.patch("/update/{invoice_id_primaire}", status_code=status.HTTP_200_OK)
 def update_invoice(invoice_id_primaire: str, payload: InvoiceCreate):
+
+
+    # 0) Vérifier la forme de deliverypoint_id_primaire SI on le met à jour
+    if payload.deliverypoint_id_primaire is not None:
+        if not re.fullmatch(r"deliverypoint_\d{3}_\d{3}", payload.deliverypoint_id_primaire):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Format invalide pour deliverypoint_id_primaire. "
+                    "La forme attendue est : deliverypoint_XXX_YYY "
+                    "(3 chiffres pour le building, 3 pour l'index)."
+                ),
+            )
+    
+    if not deliverypoint_exists_in_silver(payload.deliverypoint_id_primaire):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Le deliverypoint_id_primaire fourni n'existe pas en silver. "
+                    "Merci de créer d'abord le deliverypoint correspondant."
+                ),
+            )
 
     # 1) Charger la silver
     df = _load_invoice_silver_df()

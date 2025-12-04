@@ -1,6 +1,6 @@
 # app/routers/usage_data.py
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 import pandas as pd 
 from azure.core.exceptions import ResourceNotFoundError
 
@@ -9,6 +9,9 @@ from app.azure_datalake import write_json_to_bronze
 from app.azure_datalake import get_datalake_client
 from config import AZURE_STORAGE_FILESYSTEM
 from app.models import UsageDataCreate , UsageDataRead
+from app.jobs.usage_data_silver import run_usage_data_silver_job
+from app.routes.building import building_exists_in_silver , load_building_silver
+
 
 import re  # pour sécuriser le format de l'id building
 
@@ -59,6 +62,8 @@ def save_usage_data_silver(df: pd.DataFrame) -> None:
 
     file_client.upload_data(data, overwrite=True)
 
+##3 - fontion de test: 
+
 
 
 # compteur par building : { "003": 1, "004": 5, ... }
@@ -66,7 +71,7 @@ usage_index_by_building: dict[str, int] = {}
 
 
 @router.put("/create", status_code=201)
-def create_usage_data(payload: UsageDataCreate):
+def create_usage_data(payload: UsageDataCreate , background_tasks: BackgroundTasks):
     """On crée un nouveau id de usage data de la forme  : usage_data_{buildingIndex}_{usageIndexPourCeBuilding}"""
     global usage_index_by_building
 
@@ -102,6 +107,9 @@ def create_usage_data(payload: UsageDataCreate):
         file_name=f"{usage_id}.json",
         data=raw_dict,
     )
+
+    # 7) lancer le job bronze -> silver en tâche de fond
+    background_tasks.add_task(run_usage_data_silver_job)
 
     # 7) réponse API
     return {
@@ -202,6 +210,28 @@ def delete_usage_data(usage_data_id_primaire: str):
 
 @router.patch("/update/{usage_data_id_primaire}", status_code=200)
 def update_usage_data(usage_data_id_primaire: str, payload: UsageDataCreate):
+
+    # 🔎 0) Vérifier la forme de id_building_primaire SI on le met à jour
+    if payload.id_building_primaire is not None:
+        if not re.fullmatch(r"building_\d{3}", payload.id_building_primaire):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Format invalide pour id_building_primaire. "
+                    "La forme attendue est : building_XXX (3 chiffres)."
+                ),
+            )
+        
+     # 0.b) existence dans la silver building
+        if not building_exists_in_silver(payload.id_building_primaire):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Le id_building_primaire fourni n'existe pas en silver. "
+                    "Merci de créer d'abord le building correspondant."
+                ),
+            )
+    
     df = load_usage_data_silver()
 
     if df.empty or "usage_data_id_primaire" not in df.columns:

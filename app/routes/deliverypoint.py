@@ -1,11 +1,13 @@
-from fastapi import APIRouter, HTTPException , status
+from fastapi import APIRouter, HTTPException , status , BackgroundTasks
 from datetime import datetime, timezone
-import io
+import io , re
 import pandas as pd
 from app.azure_datalake import write_json_to_bronze , delete_file_from_bronze
 from app.utils import next_deliverypoint_index_for_building
 from app.azure_datalake import get_datalake_client, AZURE_STORAGE_FILESYSTEM
 from app.models import DeliveryPointCreate, DeliveryPointRead
+from app.jobs.deliverypoint_silver import run_deliverypoint_silver_job
+from app.routes.building import building_exists_in_silver , load_building_silver
 
 
 
@@ -58,6 +60,19 @@ def save_deliverypoint_silver(df: pd.DataFrame) -> None:
         file_client.upload_data(buffer.read(), overwrite=True)
 
 
+def deliverypoint_exists_in_silver(dp_id: str) -> bool:
+    """
+    Retourne True si deliverypoint_id_primaire existe dans la silver deliverypoint.
+    """
+    try:
+        df_dp = load_deliverypoint_silver()
+    except Exception:
+        return False
+
+    if df_dp.empty or "deliverypoint_id_primaire" not in df_dp.columns:
+        return False
+
+    return dp_id in df_dp["deliverypoint_id_primaire"].values
 
 
 router = APIRouter(
@@ -67,7 +82,7 @@ router = APIRouter(
 
 
 @router.put("/create", status_code=201)
-def create_deliverypoint(payload: DeliveryPointCreate):
+def create_deliverypoint(payload: DeliveryPointCreate , background_tasks: BackgroundTasks):
 
     # 1) on récupère l'id du building
     building_id = payload.id_building_primaire
@@ -82,8 +97,8 @@ def create_deliverypoint(payload: DeliveryPointCreate):
     building_suffix = building_id.split("_", 1)[1]
 
     # 3) on construit l'id primaire du deliverypoint
-    #    ex: deliverypoint_000003_01
-    deliverypoint_id = f"deliverypoint_{building_suffix}_{next_idx:02d}"
+    #    ex: deliverypoint_000003_001
+    deliverypoint_id = f"deliverypoint_{building_suffix}_{next_idx:03d}"
 
     # 4) timestamp
     received_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -99,6 +114,9 @@ def create_deliverypoint(payload: DeliveryPointCreate):
         file_name=f"{deliverypoint_id}.json",
         data=raw_dict,
     )
+
+    # 🔁 7) lancer le job bronze -> silver en tâche de fond
+    background_tasks.add_task(run_deliverypoint_silver_job)
 
     # 7) réponse API
     return {
@@ -205,6 +223,28 @@ def update_deliverypoint(
     """
     Mise à jour des données d’un deliverypoint 
     """
+
+      # 🔎 0) Vérifier la forme de id_building_primaire SI on le met à jour
+    # (DeliveryPointCreate a forcément ce champ, donc on le valide)
+    if payload.id_building_primaire is not None:
+        if not re.fullmatch(r"building_\d{3}", payload.id_building_primaire):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Format invalide pour id_building_primaire. "
+                    "La forme attendue est : building_XXX (3 chiffres)."
+                ),
+            )
+        
+    # 0.b) existence dans la silver building
+        if not building_exists_in_silver(payload.id_building_primaire):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Le id_building_primaire fourni n'existe pas en silver. "
+                    "Merci de créer d'abord le building correspondant."
+                ),
+            )
 
     # 1) Charger la silver
     df = load_deliverypoint_silver()
