@@ -19,15 +19,6 @@ router = APIRouter(
 
 @router.get("/all")
 def get_all_degreedays():
-    """
-    Retourne toutes les lignes de la silver degreedays :
-    - station_id
-    - year, month, period_month
-    - indicator (hdd/cdd)
-    - basis
-    - value
-    - received_at
-    """
     df = load_degreedays_silver()
 
     if df.empty:
