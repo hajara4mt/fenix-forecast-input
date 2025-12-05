@@ -134,8 +134,8 @@ def create_building(payload: BuildingCreate, background_tasks: BackgroundTasks):
         file_name=f"{building_id}.json",
         data=raw_dict,
     )
-    # 4) Lancer le job bronze -> silver en tâche de fond
-    #background_tasks.add_task(run_building_silver_job)
+    #4) Lancer le job bronze -> silver en tâche de fond
+    background_tasks.add_task(run_building_silver_job)
 
     if payload.weather_station and payload.reference_period_start:
         background_tasks.add_task(
