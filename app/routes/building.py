@@ -1,5 +1,6 @@
 # app/routers/building.py
 from fastapi import APIRouter ,  BackgroundTasks , HTTPException , status
+import numpy as np  # <-- ajoute ça en haut du fichier si pas déjà fait
 
 from uuid import uuid4
 from datetime import datetime, timezone
@@ -155,18 +156,38 @@ def create_building(payload: BuildingCreate, background_tasks: BackgroundTasks):
 
 ## Get collection Building 
 
+#@router.get("/all", response_model=list[BuildingRead])
+#def get_building_collection():
+#    df = load_building_silver()
+#    return df.to_dict(orient="records")
+
 @router.get("/all", response_model=list[BuildingRead])
 def get_building_collection():
     df = load_building_silver()
+
+    if df.empty:
+        return []
+
+    # ❌ On enlève toutes les lignes où occupant est NaN
+    if "occupant" in df.columns:
+        df = df[df["occupant"].notna()]
+        # et on force le type int pour que Pydantic soit content
+        df["occupant"] = df["occupant"].astype(int)
+
+    
+
+    # 3) Conversion finale en liste de dicts
     return df.to_dict(orient="records")
+
+    
 
 
 ## Get single Building 
 
 @router.get("/{id_building_primaire}", response_model=BuildingRead)
-def get_building_single(building_id: str):
+def get_building_single(id_building_primaire: str):
     df = load_building_silver()
-    row = df[df["id_building_primaire"] == building_id]
+    row = df[df["id_building_primaire"] == id_building_primaire]
 
     if row.empty:
         raise HTTPException(status_code=404, detail="Building non trouvé")

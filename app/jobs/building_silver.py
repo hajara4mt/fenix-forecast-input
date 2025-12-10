@@ -85,11 +85,15 @@ def transform_building(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = None
 
     # Typage basique
-    df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
+    df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce").fillna(0)
     df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
     df["geographical_area"] = pd.to_numeric(df["geographical_area"], errors="coerce")
-    df["occupant"] = pd.to_numeric(df["occupant"], errors="coerce")
-    df["surface"] = pd.to_numeric(df["surface"], errors="coerce")
+    df["occupant"] = pd.to_numeric(df["occupant"], errors="coerce").fillna(0)
+    df["surface"] = pd.to_numeric(df["surface"], errors="coerce").fillna(0)
+
+    # vérifier qu'il n'y a aucun NaN
+    if df["occupant"].isna().any():
+      raise ValueError("Certaines lignes building ont un occupant invalide ou manquant.")
 
     # Dates
     df["reference_period_start"] = pd.to_datetime(

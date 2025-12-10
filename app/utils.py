@@ -36,7 +36,7 @@ def next_deliverypoint_index_for_building(building_id: str) -> int:
         return 1
 
     # pattern du fichier : deliverypoint_000003_01.json
-    pattern = re.compile(rf"deliverypoint_{building_suffix}_(\d{{2}})\.json")
+    pattern = re.compile(rf"deliverypoint_{building_suffix}_(\d{{3}})\.json")
 
     for p in paths:
         if p.is_directory:

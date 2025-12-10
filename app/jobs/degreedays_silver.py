@@ -5,16 +5,13 @@ from typing import List, Dict
 from datetime import date, datetime, timezone
 from collections import defaultdict
 import calendar
-
 import pandas as pd
-
 from app.azure_datalake import get_datalake_client, write_json_to_bronze
 from config import AZURE_STORAGE_FILESYSTEM
 from app.degreedays_client import get_monthly_hdd_cdd  # pour appeler l'API DegreeDays
 
 
 SILVER_DEGREEDAYS_PATH = "silver/degreedays/degreedays_monthly.parquet"
-
 
 
 def load_degreedays_bronze() -> pd.DataFrame:

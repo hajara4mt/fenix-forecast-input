@@ -54,7 +54,7 @@ class BuildingCreate(BaseModel):
     typology: Optional[str] = None
 
     geographical_area: Optional[int] = None
-    occupant: Optional[Annotated[int, Field(ge=0)]] = None
+    occupant: Annotated[int, Field(ge=0)]
     surface: Optional[Annotated[int, Field(ge=0)]] = None
 
     reference_period_start: Optional[date] = None

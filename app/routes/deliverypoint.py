@@ -61,9 +61,7 @@ def save_deliverypoint_silver(df: pd.DataFrame) -> None:
 
 
 def deliverypoint_exists_in_silver(dp_id: str) -> bool:
-    """
-    Retourne True si deliverypoint_id_primaire existe dans la silver deliverypoint.
-    """
+    
     try:
         df_dp = load_deliverypoint_silver()
     except Exception:
