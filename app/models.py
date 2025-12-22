@@ -1,7 +1,9 @@
-from typing import Optional
+from typing import Optional , List , Dict
 from datetime import date , datetime
 from typing import Annotated
 from enum import Enum
+from typing import List
+
 
 
 
@@ -54,7 +56,7 @@ class BuildingCreate(BaseModel):
     typology: Optional[str] = None
 
     geographical_area: Optional[int] = None
-    occupant: Annotated[int, Field(ge=0)]
+    occupant: Optional[Annotated[int, Field(ge=0)]]
     surface: Optional[Annotated[int, Field(ge=0)]] = None
 
     reference_period_start: Optional[date] = None
@@ -178,3 +180,45 @@ class InvoiceRead(BaseModel):
 
     value: Annotated[float, Field(ge=0)]
     received_at: datetime
+
+
+
+## La route résultat 
+
+from datetime import date
+from typing import List
+from pydantic import BaseModel, Field, model_validator
+
+class ForecastRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    id_building_primaire: str = Field(min_length=1)
+    start_date_ref: date
+    end_date_ref: date
+    start_date_pred: date
+    end_date_pred: date
+
+    @model_validator(mode="after")
+    def check_dates(self) -> "ForecastRequest":
+        if self.end_date_ref < self.start_date_ref:
+            raise ValueError("end_date_ref doit être >= start_date_ref")
+        if self.end_date_pred < self.start_date_pred:
+            raise ValueError("end_date_pred doit être >= start_date_pred")
+
+        # ✅ règle : période prédiction doit être dans la même année
+        if self.start_date_pred.year != self.end_date_pred.year:
+            raise ValueError("start_date_pred et end_date_pred doivent être dans la même année")
+
+        return self
+
+
+class ForecastResultItem(BaseModel):
+    deliverypoint_id_primaire: str
+    month: str  # "YYYY-MM"
+    real: float
+    predictive: float = 0.0
+
+class ForecastResponse(BaseModel):
+    id_building_primaire: str
+    results: List[ForecastResultItem]
+    months_missing_by_deliverypoint: Optional[Dict[str, List[str]]] = None
