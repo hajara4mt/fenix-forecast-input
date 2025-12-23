@@ -7,6 +7,8 @@ from typing import List
 
 
 
+
+
 from pydantic import BaseModel, Field, field_validator, ValidationInfo , model_validator
 
 class BaseCreatedResponse(BaseModel):
@@ -183,16 +185,13 @@ class InvoiceRead(BaseModel):
 
 
 
-## La route résultat 
 
-from datetime import date
-from typing import List
-from pydantic import BaseModel, Field, model_validator
+
 
 class ForecastRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
-    id_building_primaire: str = Field(min_length=1)
+    id_building_primaire: str
     start_date_ref: date
     end_date_ref: date
     start_date_pred: date
@@ -204,21 +203,50 @@ class ForecastRequest(BaseModel):
             raise ValueError("end_date_ref doit être >= start_date_ref")
         if self.end_date_pred < self.start_date_pred:
             raise ValueError("end_date_pred doit être >= start_date_pred")
-
-        # ✅ règle : période prédiction doit être dans la même année
-        if self.start_date_pred.year != self.end_date_pred.year:
-            raise ValueError("start_date_pred et end_date_pred doivent être dans la même année")
-
         return self
 
 
-class ForecastResultItem(BaseModel):
+class BuildingForecastBlock(BaseModel):
+    weather_station: Optional[str] = None
+    surface: float = 0.0
+    occupant: int = 0
+    total_energy_annual_consumption_reference: float = 0.0
+    ratio_kwh_m2: float = 0.0
+    ratio_kwh_occupant: float = 0.0
+
+
+class ACoefficient(BaseModel):
+    hdd10: float = 0.0
+    cdd26: float = 0.0
+
+
+class ModelCoefficients(BaseModel):
+    a_coefficient: ACoefficient = Field(default_factory=ACoefficient)
+    b_coefficient: float = 0.0
+    annual_consumption_reference: float = 0.0
+    annual_ghg_emissions_reference: float = 0.0
+    ME: float = 0.0
+    RMSE: float = 0.0
+    MAE: float = 0.0
+    MPE: float = 0.0
+    MAPE: float = 0.0
+    R2: float = 0.0
+
+
+class MonthlyPredictiveConsumption(BaseModel):
+    month: str                 # "YYYY-MM"
+    real_consumption: float    # depuis invoice
+    predictive_consumption: float = 0.0  # pour l’instant toujours 0
+
+
+class DeliverypointForecastBlock(BaseModel):
     deliverypoint_id_primaire: str
-    month: str  # "YYYY-MM"
-    real: float
-    predictive: float = 0.0
+    model_coefficients: ModelCoefficients
+    predictive_consumption: List[MonthlyPredictiveConsumption]
+
 
 class ForecastResponse(BaseModel):
     id_building_primaire: str
-    results: List[ForecastResultItem]
+    building: BuildingForecastBlock
+    deliverypoints: List[DeliverypointForecastBlock]
     months_missing_by_deliverypoint: Optional[Dict[str, List[str]]] = None
