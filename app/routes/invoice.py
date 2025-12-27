@@ -1,3 +1,4 @@
+###routes/invoices.py
 import re , io , pandas as pd
 from fastapi import APIRouter, HTTPException, status , BackgroundTasks
 from datetime import datetime, timezone
@@ -7,7 +8,7 @@ from app.models import InvoiceCreate , InvoiceRead
 from app.azure_datalake import write_json_to_bronze, get_datalake_client , delete_file_from_bronze
 from config import AZURE_STORAGE_FILESYSTEM
 from app.jobs.invoice_silver import run_invoice_silver_job
-from app.routes.deliverypoint import deliverypoint_exists_in_silver
+from app.utils import deliverypoint_exists_in_silver
 
 
 SILVER_INVOICE_PATH = "silver/invoice/invoice.parquet"
@@ -93,6 +94,37 @@ def _save_invoice_silver_df(df: pd.DataFrame) -> None:
     buffer.seek(0)
 
     file_client.upload_data(buffer.read(), overwrite=True)
+
+
+def delete_invoices_for_deliverypoint(dp_id: str) -> int:
+    """
+    Supprime toutes les invoices liées à un deliverypoint :
+    - silver/invoice (parquet)
+    - bronze/invoice (json)
+    Retourne le nombre d'invoices supprimées.
+    """
+    df = _load_invoice_silver_df()
+
+    if df.empty or "deliverypoint_id_primaire" not in df.columns:
+        return 0
+
+    mask = df["deliverypoint_id_primaire"].astype(str) == str(dp_id)
+    df_to_delete = df.loc[mask].copy()
+
+    if df_to_delete.empty:
+        return 0
+
+    # 1) supprimer dans silver
+    df_filtered = df.loc[~mask].copy()
+    _save_invoice_silver_df(df_filtered)
+
+    # 2) supprimer les JSON bronze
+    if "invoice_id_primaire" in df_to_delete.columns:
+        for inv_id in df_to_delete["invoice_id_primaire"].astype(str).tolist():
+            delete_file_from_bronze("invoice", f"{inv_id}.json")
+
+    return len(df_to_delete)
+
 
 @router.put("/create", status_code=status.HTTP_201_CREATED)
 def create_invoice(payload: InvoiceCreate , background_tasks: BackgroundTasks):

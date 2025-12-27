@@ -1,7 +1,7 @@
 # app/routers/building.py
 from fastapi import APIRouter ,  BackgroundTasks , HTTPException , status
 import numpy as np  # <-- ajoute ça en haut du fichier si pas déjà fait
-
+from app.utils import building_business_key_exists_in_silver
 from uuid import uuid4
 from datetime import datetime, timezone
 from app.models import BuildingCreate, BuildingCreatedResponse, BuildingRead
@@ -12,6 +12,15 @@ from config import AZURE_STORAGE_FILESYSTEM
 import re
 from app.jobs.building_silver import run_building_silver_job
 from app.jobs.degreedays_silver import ensure_degreedays_for_station
+ # adapte si ton fichier s'appelle usagedata.py
+from app.azure_datalake import delete_file_from_bronze
+from app.utils import (
+    load_building_silver, save_building_silver, building_exists_in_silver,
+    get_deliverypoints_for_building,
+    delete_invoices_for_deliverypoint,
+    delete_usage_data_for_building,
+    load_deliverypoint_silver, save_deliverypoint_silver,
+)
 
 
 
@@ -55,7 +64,7 @@ def initialize_building_index_from_bronze() -> int:
 
 ##lire les jsons du Datalak 
 
-def load_building_silver() -> pd.DataFrame:
+# load_building_silver() -> pd.DataFrame:
     service = get_datalake_client()
     fs = service.get_file_system_client(AZURE_STORAGE_FILESYSTEM)
     file = fs.get_file_client(SILVER_BUILDING_PATH)
@@ -68,7 +77,7 @@ def load_building_silver() -> pd.DataFrame:
 
 
 
-def save_building_silver(df):
+#def save_building_silver(df):
     """
     Réécrit tout le parquet silver/building/building.parquet
     à partir du DataFrame fourni.
@@ -89,7 +98,7 @@ def save_building_silver(df):
 
 
 ## chemin de test de presence d'un id building dans la silver 
-def building_exists_in_silver(building_id: str) -> bool:
+#def building_exists_in_silver(building_id: str) -> bool:
     """
     Retourne True si id_building_primaire existe dans la silver building.
     """
@@ -110,12 +119,111 @@ router = APIRouter(
     tags=["building"],
 )
 
-current_building_index = 0  
+#current_building_index = 0  
+
+#def delete_usage_data_for_building(building_id: str) -> int:
+#    df = load_usage_data_silver()
+ #   if df.empty or "id_building_primaire" not in df.columns:
+  #      return 0
+
+   # mask = df["id_building_primaire"].astype(str) == str(building_id)
+   # df_to_delete = df.loc[mask].copy()
+    #if df_to_delete.empty:
+     #   return 0
+
+    # silver
+    #df_filtered = df.loc[~mask].copy()
+    #save_usage_data_silver(df_filtered)
+
+    # bronze
+  #  if "usage_data_id_primaire" in df_to_delete.columns:
+   ##     for ud_id in df_to_delete["usage_data_id_primaire"].astype(str).tolist():
+     #       delete_file_from_bronze("usage_data", f"{ud_id}.json")
+
+    #return len(df_to_delete)
+
+
+#def delete_deliverypoints_for_building(building_id: str) -> list[str]:
+  #  """
+  #  Supprime tous les deliverypoints liés au building :
+   # - silver/deliverypoint
+    #- bronze/deliverypoint
+    #Retourne la liste des dp_ids supprimés (utile pour delete invoices).
+  #  """
+   # df_dp = load_deliverypoint_silver()
+    #if df_dp.empty or "id_building_primaire" not in df_dp.columns:
+     #   return []
+
+    #mask = df_dp["id_building_primaire"].astype(str) == str(building_id)
+    #df_to_delete = df_dp.loc[mask].copy()
+    #if df_to_delete.empty:
+     #   return []
+
+    #dp_ids = df_to_delete["deliverypoint_id_primaire"].astype(str).tolist()
+
+    # silver
+    #df_filtered = df_dp.loc[~mask].copy()
+   # save_deliverypoint_silver(df_filtered)
+
+    # bronze
+    #for dp_id in dp_ids:
+    #    delete_file_from_bronze("deliverypoint", f"{dp_id}.json")
+
+    #return dp_ids
+
+
+#def delete_invoices_for_deliverypoints(dp_ids: list[str]) -> int:
+  ##  """
+  #  Supprime toutes les invoices liées à une liste de deliverypoints
+#     """
+# #    if not dp_ids:
+#         return 0
+
+#     df_inv = _load_invoice_silver_df()
+#     if df_inv.empty or "deliverypoint_id_primaire" not in df_inv.columns:
+#         return 0
+
+#     mask = df_inv["deliverypoint_id_primaire"].astype(str).isin(set(map(str, dp_ids)))
+#     df_to_delete = df_inv.loc[mask].copy()
+
+#     if df_to_delete.empty:
+#         return 0
+
+#     # silver
+#     df_filtered = df_inv.loc[~mask].copy()
+#     _save_invoice_silver_df(df_filtered)
+
+#     # bronze
+#     if "invoice_id_primaire" in df_to_delete.columns:
+#         for inv_id in df_to_delete["invoice_id_primaire"].astype(str).tolist():
+#             delete_file_from_bronze("invoice", f"{inv_id}.json")
+
+#     return len(df_to_delete)
+# ##
+
 
 ## Création de batiment et mise en place d'un ID_primaire 
 @router.put("/create", status_code=201)
 def create_building(payload: BuildingCreate, background_tasks: BackgroundTasks):
     global current_building_index
+
+
+    # ✅ PRE-CHECK silver : (platform_code, building_code)
+    if building_business_key_exists_in_silver(
+        platform_code=payload.platform_code,
+        building_code=payload.building_code,
+        load_building_silver_fn=load_building_silver,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Building existe déjà (platform_code, building_code) en silver.",
+        )
+
+    # 1) Générer un id primaire
+    current_building_index = initialize_building_index_from_bronze() + 1
+    building_id = f"building_{current_building_index:03d}"
+
+    
 
     # 1) Générer un id primaire
     current_building_index = initialize_building_index_from_bronze() + 1
@@ -195,31 +303,56 @@ def get_building_single(id_building_primaire: str):
     return row.iloc[0].to_dict()
 
 ###Route de suppression de batiment 
+@router.delete("/{id_building_primaire}", status_code=200, summary="Suppression de bâtiment (cascade)")
+def delete_building(id_building_primaire: str):
 
-@router.delete( "/{id_building_primaire}", status_code=200, summary="Suppression de bâtiment")
-def delete_building(building_id: str):
-    """
-    Supprime un building de la zone silver (Parquet) à partir de son id_building_primaire.
-    """
-    df = load_building_silver()
+    # 1) vérifier building existe
+    df_b = load_building_silver()
+    if df_b.empty or "id_building_primaire" not in df_b.columns:
+        raise HTTPException(status_code=404, detail="Aucun building en silver.")
 
-    # On filtre les lignes qui NE sont PAS ce building_id
-    mask = df["id_building_primaire"] != building_id
-    df_filtered = df[mask]
-
-    # Si rien n'a été supprimé, c'est que l'id n'existait pas
-    if len(df_filtered) == len(df):
+    if str(id_building_primaire) not in df_b["id_building_primaire"].astype(str).values:
         raise HTTPException(status_code=404, detail="Id_Building_Primaire non trouvé, suppression impossible")
 
-    # On réécrit le parquet avec le DF filtré
-    save_building_silver(df_filtered)
+    # 2) récupérer deliverypoints du building
+    df_dp_b = get_deliverypoints_for_building(id_building_primaire)
+    if df_dp_b.empty:
+        dp_ids = []
+    else:
+        dp_ids = df_dp_b["deliverypoint_id_primaire"].astype(str).tolist()
 
-    # suppression du fichier JSON en bronze
-    delete_file_from_bronze("building", f"{building_id}.json")
+        # supprimer deliverypoints en silver
+        df_dp_all = load_deliverypoint_silver()
+        df_dp_all = df_dp_all[df_dp_all["id_building_primaire"].astype(str) != str(id_building_primaire)].copy()
+        save_deliverypoint_silver(df_dp_all)
+
+        # supprimer deliverypoints en bronze
+        for dp_id in dp_ids:
+            delete_file_from_bronze("deliverypoint", f"{dp_id}.json")
+
+    # 3) supprimer invoices pour chaque deliverypoint
+    nb_invoices_deleted = 0
+    for dp_id in dp_ids:
+        nb_invoices_deleted += delete_invoices_for_deliverypoint(dp_id)
+
+    # 4) supprimer usage_data du building
+    nb_usage_deleted = delete_usage_data_for_building(id_building_primaire)
+
+    # 5) supprimer building en silver
+    df_b_filtered = df_b[df_b["id_building_primaire"].astype(str) != str(id_building_primaire)].copy()
+    save_building_silver(df_b_filtered)
+
+    # 6) supprimer building en bronze
+    delete_file_from_bronze("building", f"{id_building_primaire}.json")
 
     return {
-    "result": True,
-    "message": "Le bâtiment a été supprimé avec succès."}
+        "result": True,
+        "message": "Le bâtiment a été supprimé avec succès (cascade).",
+        "deliverypoints_deleted": len(dp_ids),
+        "invoices_deleted": nb_invoices_deleted,
+        "usage_data_deleted": nb_usage_deleted,
+    }
+
 
 ## Mise à jour des inputs d'un Building et du cup la mise à Jour dans le fichier parquet de la Silver 
 

@@ -1,3 +1,4 @@
+##routes/buildingpoints
 from fastapi import APIRouter, HTTPException , status , BackgroundTasks
 from datetime import datetime, timezone
 import io , re
@@ -7,7 +8,12 @@ from app.utils import next_deliverypoint_index_for_building
 from app.azure_datalake import get_datalake_client, AZURE_STORAGE_FILESYSTEM
 from app.models import DeliveryPointCreate, DeliveryPointRead
 from app.jobs.deliverypoint_silver import run_deliverypoint_silver_job
-from app.routes.building import building_exists_in_silver , load_building_silver
+from app.utils import (
+    building_exists_in_silver,
+    load_deliverypoint_silver, save_deliverypoint_silver,
+    delete_invoices_for_deliverypoint,
+)
+
 
 
 
@@ -176,37 +182,35 @@ def get_deliverypoint(deliverypoint_id_primaire: str):
 
 @router.delete("/{deliverypoint_id_primaire}", status_code=200)
 def delete_deliverypoint(deliverypoint_id_primaire: str):
-    """
-    Supprime un deliverypoint de la silver (parquet) et de la bronze (JSON).
-    """
 
-    # 1) charger la silver
+    # ✅ cascade invoices
+    nb_invoices_deleted = delete_invoices_for_deliverypoint(deliverypoint_id_primaire)
+
+    # supprimer le deliverypoint en silver
     df = load_deliverypoint_silver()
+    if df.empty or "deliverypoint_id_primaire" not in df.columns:
+        raise HTTPException(status_code=404, detail="Aucun deliverypoint en silver.")
 
-    # 2) filtrer pour enlever ce deliverypoint
-    mask = df["deliverypoint_id_primaire"] != deliverypoint_id_primaire
-    df_filtered = df[mask]
+    mask_keep = df["deliverypoint_id_primaire"].astype(str) != str(deliverypoint_id_primaire)
+    df_filtered = df.loc[mask_keep].copy()
 
-    # si rien n'a été supprimé → id inconnu
     if len(df_filtered) == len(df):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="DeliveryPoint non trouvé"
-        )
+        raise HTTPException(status_code=404, detail="DeliveryPoint non trouvé")
 
-    # 3) sauvegarder la silver sans ce deliverypoint
     save_deliverypoint_silver(df_filtered)
 
-    # 4) supprimer aussi le JSON en bronze
+    # supprimer bronze JSON du deliverypoint
     delete_file_from_bronze("deliverypoint", f"{deliverypoint_id_primaire}.json")
 
-    # 5) réponse
     return {
         "result": True,
-        "message": "Le deliverypoint a été supprimé avec succès.",
+        "message": "DeliveryPoint supprimé (cascade invoices appliquée).",
+        "invoices_deleted": nb_invoices_deleted,
     }
 
+##------------------------------------------#
 ##Mise à jour de deliverypoint 
+##------------------------------------------#
 
 # ...
 
