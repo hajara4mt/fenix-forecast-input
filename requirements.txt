@@ -1,4 +1,4 @@
-algo_prediction @ git+https://github.com/hajara4mt/algo-prediction.git@main
+algo-prediction @ git+https://github.com/hajara4mt/algo-prediction.git@main
 fastapi
 uvicorn
 pydantic
