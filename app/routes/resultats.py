@@ -1,8 +1,13 @@
 # app/routes/resultats.py
 
+from __future__ import annotations
+
 from fastapi import APIRouter, HTTPException
 from typing import List, Dict, Optional
 import pandas as pd
+import math
+from typing import Any
+
 
 from app.models import (
     ForecastRequest,
@@ -13,195 +18,253 @@ from app.models import (
     MonthlyPredictiveConsumption,
     DeliverypointForecastBlock,
 )
+
 from app.routes.building import building_exists_in_silver, load_building_silver
 from app.routes.deliverypoint import load_deliverypoint_silver
-from app.routes.invoice import _load_invoice_silver_df
+
+# ✅ import algo (depuis package installé)
+from algo_prediction.algo_services.run_algo_services import run_building_and_persist
 
 router = APIRouter(prefix="/forecast", tags=["forecast"])
+
+
+def _float_or_zero(val) -> float:
+    return float(val) if pd.notna(val) else 0.0
+
+
+def _int_or_zero(val) -> int:
+    return int(val) if pd.notna(val) else 0
+
+
+def _safe_str(v) -> str:
+    return "" if v is None else str(v)
+
+def _sanitize_json(obj: Any) -> Any:
+    """Remplace NaN/inf par None pour éviter json.dumps failure."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_json(v) for v in obj]
+    return obj
+
 
 
 @router.post("/resultat", response_model=ForecastResponse)
 def forecast_resultat(payload: ForecastRequest):
     building_id = payload.id_building_primaire
 
-    # 0) vérifier que la période de prédiction est dans la même année
+    # 0) garder ta règle "même année" (si tu veux)
     if payload.start_date_pred.year != payload.end_date_pred.year:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "start_date_pred et end_date_pred doivent être dans la même année."
-            ),
+            detail="start_date_pred et end_date_pred doivent être dans la même année.",
         )
 
-    # 1) vérifier que le building existe en silver
+    # 1) building existe ?
     if not building_exists_in_silver(building_id):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Building {building_id} introuvable en silver.",
-        )
+        raise HTTPException(status_code=404, detail=f"Building {building_id} introuvable en silver.")
 
-    # 1.b) récupérer les infos du building (weather_station, surface, occupant)
+    # 1.b) infos building
     df_build = load_building_silver()
     row_b = df_build[df_build["id_building_primaire"] == building_id]
     if row_b.empty:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Building {building_id} introuvable en silver (lecture).",
-        )
-
+        raise HTTPException(status_code=404, detail=f"Building {building_id} introuvable en silver (lecture).")
     row_b = row_b.iloc[0]
 
-    def _float_or_zero(val) -> float:
-        return float(val) if pd.notna(val) else 0.0
-
-    def _int_or_zero(val) -> int:
-        return int(val) if pd.notna(val) else 0
+    surface = _float_or_zero(row_b.get("surface"))
+    occupant = _float_or_zero(row_b.get("occupant"))
 
     building_block = BuildingForecastBlock(
         weather_station=row_b.get("weather_station"),
-        surface=_float_or_zero(row_b["surface"]) if "surface" in row_b else 0.0,
-        occupant=_int_or_zero(row_b["occupant"]) if "occupant" in row_b else 0,
+        surface=surface,
+        occupant=_int_or_zero(row_b.get("occupant")),
         total_energy_annual_consumption_reference=0.0,
         ratio_kwh_m2=0.0,
         ratio_kwh_occupant=0.0,
     )
 
-    # 2) récupérer les deliverypoints de ce building
+    # 2) deliverypoints du building (pour construire le squelette)
     df_dp = load_deliverypoint_silver()
     if df_dp.empty:
-        raise HTTPException(
-            status_code=404,
-            detail="Aucun deliverypoint enregistré (silver vide).",
-        )
+        raise HTTPException(status_code=404, detail="Aucun deliverypoint enregistré (silver vide).")
 
     needed_dp = {"id_building_primaire", "deliverypoint_id_primaire"}
     if not needed_dp.issubset(df_dp.columns):
-        raise HTTPException(
-            status_code=500,
-            detail="Colonnes manquantes dans silver/deliverypoint.",
-        )
+        raise HTTPException(status_code=500, detail="Colonnes manquantes dans silver/deliverypoint.")
 
     df_dp_b = df_dp[df_dp["id_building_primaire"] == building_id].copy()
     if df_dp_b.empty:
-        raise HTTPException(
-            status_code=404,
-            detail="Aucun deliverypoint associé à ce building.",
-        )
+        raise HTTPException(status_code=404, detail="Aucun deliverypoint associé à ce building.")
 
     dp_ids = df_dp_b["deliverypoint_id_primaire"].astype(str).unique().tolist()
 
-    # 3) période prédiction (mois attendus)
+    # 3) appeler l'algo (il écrit déjà dans ADLS via ton writer)
+    try:
+        out = run_building_and_persist(
+            building_id=building_id,
+            start_ref=payload.start_date_ref,
+            end_ref=payload.end_date_ref,
+            start_pred=payload.start_date_pred,
+            end_pred=payload.end_date_pred,
+            month_str_max="2025-11",  # tu m'as dit qu'on garde cette condition
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Algo failed: {e}")
+
+    # 4) construire DataFrames depuis out
+    # out["results"] : lignes predictions_monthly
+    # out["models"]  : lignes models
+    df_pred = pd.DataFrame(out.get("results", []))
+    df_models = pd.DataFrame(out.get("models", []))
+
+    # Normaliser noms attendus (si besoin)
+    # On veut: dp_id, fluid, month_str, real_consumption, predictive_consumption, conf bounds
+    if not df_pred.empty:
+        # uniformiser types
+        df_pred["deliverypoint_id_primaire"] = df_pred["deliverypoint_id_primaire"].astype(str)
+        df_pred["month_str"] = df_pred["month_str"].astype(str)
+
+    if not df_models.empty:
+        df_models["deliverypoint_id_primaire"] = df_models["deliverypoint_id_primaire"].astype(str)
+
+    # 5) months_expected (pour missing)
     pred_start = pd.to_datetime(payload.start_date_pred)
     pred_end = pd.to_datetime(payload.end_date_pred)
-
     months_expected: List[str] = (
         pd.period_range(pred_start.to_period("M"), pred_end.to_period("M"), freq="M")
         .astype(str)
         .tolist()
     )
 
-    # 4) récupérer les invoices en silver
-    df_inv = _load_invoice_silver_df()
-    if df_inv.empty:
-        raise HTTPException(
-            status_code=404,
-            detail="Aucune facture disponible en silver/invoice.",
-        )
-
-    needed_inv = {"deliverypoint_id_primaire", "start", "value"}
-    if not needed_inv.issubset(df_inv.columns):
-        raise HTTPException(
-            status_code=500,
-            detail="Colonnes manquantes dans silver/invoice.",
-        )
-
-    df_inv = df_inv.copy()
-    df_inv["start"] = pd.to_datetime(df_inv["start"], errors="coerce")
-    df_inv["value"] = pd.to_numeric(df_inv["value"], errors="coerce")
-
-    # filtre sur période + deliverypoints du building
-    df_inv = df_inv[
-        df_inv["deliverypoint_id_primaire"].astype(str).isin(dp_ids)
-    ].copy()
-    df_inv = df_inv[
-        (df_inv["start"] >= pred_start) & (df_inv["start"] <= pred_end)
-    ].copy()
-
-    if df_inv.empty:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "Aucune facture trouvée pour les deliverypoints de ce building "
-                "sur la période de prédiction demandée."
-            ),
-        )
-
-    df_inv["month"] = df_inv["start"].dt.strftime("%Y-%m")
-
-    # agrégation mensuelle par deliverypoint
-    df_real = (
-        df_inv.groupby(["deliverypoint_id_primaire", "month"], as_index=False)["value"]
-        .sum()
-        .rename(columns={"value": "real"})
-    )
-
-    # 5) construire les blocs deliverypoints + predictive_consumption
-    deliverypoints_blocks: List[DeliverypointForecastBlock] = []
-
-    # dictionnaire des mois manquants par deliverypoint
     months_missing_by_dp: Dict[str, List[str]] = {}
 
+    # 6) indexer models par (dp, fluid)
+    models_by_key: Dict[tuple[str, str], Dict] = {}
+    if not df_models.empty:
+        for _, r in df_models.iterrows():
+            key = (str(r.get("deliverypoint_id_primaire")), str(r.get("fluid")))
+            models_by_key[key] = r.to_dict()
+
+    # 7) Construire deliverypoints blocks (un block par DP, avec liste mensuelle multi-fluid)
+    # Ton modèle actuel DeliverypointForecastBlock n’a pas “fluid” au niveau du block, donc:
+    # - soit tu mets toutes les lignes (elec+heat) dans la même liste monthly
+    # - soit tu changes ton modèle (mieux) : un block par couple DP×fluid
+    #
+    # Ici, je garde ton modèle: 1 block par DP, en concaténant les mois tous fluides.
+    deliverypoints_blocks: List[DeliverypointForecastBlock] = []
+    months_missing_by_dp: Dict[str, List[str]] = {}
+
+
     for dp_id in dp_ids:
-        df_dp_real = df_real[df_real["deliverypoint_id_primaire"].astype(str) == dp_id].copy()
-        df_dp_real = df_dp_real.sort_values("month")
+      df_dp_pred = (
+        df_pred[df_pred["deliverypoint_id_primaire"].astype(str) == dp_id].copy()
+        if not df_pred.empty
+        else pd.DataFrame()
+    )
 
-        # mois présents pour ce deliverypoint
-        months_present = (
-            df_dp_real["month"].astype(str).unique().tolist()
-            if not df_dp_real.empty
-            else []
-        )
-        months_missing = [m for m in months_expected if m not in months_present]
-        if months_missing:
-            months_missing_by_dp[dp_id] = months_missing
+    # ✅ même logique que l'ancien code :
+    # mois présents = mois où real_consumption existe
+      df_dp_real = (
+        df_dp_pred[pd.notna(df_dp_pred["real_consumption"])].copy()
+        if not df_dp_pred.empty and "real_consumption" in df_dp_pred.columns
+        else pd.DataFrame()
+     )
 
-        # construire la liste des consommations mensuelles (uniquement mois présents)
-        monthly_entries: List[MonthlyPredictiveConsumption] = []
+      months_present = (
+        df_dp_real["month_str"].astype(str).unique().tolist()
+        if not df_dp_real.empty
+        else []
+    )
+
+      months_missing = [m for m in months_expected if m not in months_present]
+      if months_missing:
+        months_missing_by_dp[dp_id] = months_missing
+
+    # ✅ Liste des entrées mensuelles = uniquement mois avec réel
+      monthly_entries: List[MonthlyPredictiveConsumption] = []
+
+      if not df_dp_real.empty:
+        df_dp_real = df_dp_real.sort_values("month_str", kind="stable")
         for _, row in df_dp_real.iterrows():
+            rc = row["real_consumption"]
+            pc = row.get("predictive_consumption")
+
             monthly_entries.append(
                 MonthlyPredictiveConsumption(
-                    month=str(row["month"]),
-                    real_consumption=float(row["real"]),    # depuis invoice
-                    predictive_consumption=0.0,             # pour l'instant 0
+                    month=str(row["month_str"]),
+                    real_consumption=float(rc),
+                    predictive_consumption=float(pc) if pd.notna(pc) else None,
+                    confidence_lower95=float(row["confidence_lower95"])
+                    if pd.notna(row.get("confidence_lower95")) else None,
+                    confidence_upper95=float(row["confidence_upper95"])
+                    if pd.notna(row.get("confidence_upper95")) else None,
                 )
             )
 
-        # coefficients tous à 0 pour l’instant
-        model_coefs = ModelCoefficients(
-            a_coefficient=ACoefficient(hdd10=0.0, cdd26=0.0),
-            b_coefficient=0.0,
-            annual_consumption_reference=0.0,
-            annual_ghg_emissions_reference=0.0,
-            ME=0.0,
-            RMSE=0.0,
-            MAE=0.0,
-            MPE=0.0,
-            MAPE=0.0,
-            R2=0.0,
-        )
+    # Model coeffs : 1er model trouvé pour ce DP
+      model_row = None
+      if not df_models.empty:
+        df_m = df_models[df_models["deliverypoint_id_primaire"].astype(str) == dp_id]
+        if not df_m.empty:
+            model_row = df_m.iloc[0].to_dict()
 
-        deliverypoints_blocks.append(
-            DeliverypointForecastBlock(
-                deliverypoint_id_primaire=dp_id,
-                model_coefficients=model_coefs,
-                predictive_consumption=monthly_entries,
-            )
-        )
-
-    # 6) réponse finale
-    return ForecastResponse(
-        id_building_primaire=building_id,
-        building=building_block,
-        deliverypoints=deliverypoints_blocks,
-        months_missing_by_deliverypoint=months_missing_by_dp or None,
+      model_coefs = ModelCoefficients(
+        a_coefficient=ACoefficient(
+            hdd10=float(model_row.get("a_hdd", 0.0)) if model_row else 0.0,
+            cdd26=float(model_row.get("a_cdd", 0.0)) if model_row else 0.0,
+        ),
+        b_coefficient=float(model_row.get("b_coefficient", 0.0)) if model_row else 0.0,
+        annual_consumption_reference=float(model_row.get("annual_consumption_reference", 0.0)) if model_row else 0.0,
+        annual_ghg_emissions_reference=float(model_row.get("annual_ghg_emissions_reference", 0.0))
+        if model_row and "annual_ghg_emissions_reference" in model_row else 0.0,
+        ME=float(model_row.get("ME", 0.0)) if model_row else 0.0,
+        RMSE=float(model_row.get("RMSE", 0.0)) if model_row else 0.0,
+        MAE=float(model_row.get("MAE", 0.0)) if model_row else 0.0,
+        MPE=float(model_row.get("MPE", 0.0)) if model_row else 0.0,
+        MAPE=float(model_row.get("MAPE", 0.0)) if model_row else 0.0,
+        R2=float(model_row.get("R2", 0.0)) if model_row else 0.0,
     )
+
+      deliverypoints_blocks.append(
+        DeliverypointForecastBlock(
+            deliverypoint_id_primaire=dp_id,
+            model_coefficients=model_coefs,
+            predictive_consumption=monthly_entries,
+        )
+    )
+
+
+
+
+
+
+        
+
+    # 8) metrics building (si l'algo les renvoie, sinon calc depuis models)
+    total_ref = 0.0
+    if not df_models.empty and "annual_consumption_reference" in df_models.columns:
+        total_ref = float(pd.to_numeric(df_models["annual_consumption_reference"], errors="coerce").fillna(0).sum())
+
+    ratio_m2 = (total_ref / surface) if surface not in (0.0, None) else 0.0
+    ratio_occ = (total_ref / occupant) if occupant not in (0.0, None) else 0.0
+
+    building_block.total_energy_annual_consumption_reference = total_ref
+    building_block.ratio_kwh_m2 = ratio_m2
+    building_block.ratio_kwh_occupant = ratio_occ
+
+    # 9) réponse finale
+    resp = ForecastResponse(
+    id_building_primaire=building_id,
+    building=building_block,
+    deliverypoints=deliverypoints_blocks,
+    months_missing_by_deliverypoint=months_missing_by_dp or None,
+)
+
+# Pydantic v2:
+    return _sanitize_json(resp.model_dump())
