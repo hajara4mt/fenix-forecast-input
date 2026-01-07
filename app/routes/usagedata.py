@@ -1,9 +1,9 @@
 # app/routers/usage_data.py
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks , Query 
 import pandas as pd 
 from azure.core.exceptions import ResourceNotFoundError
-
+from pydantic import BaseModel
 from datetime import datetime, timezone
 from app.azure_datalake import write_json_to_bronze
 from app.azure_datalake import get_datalake_client
@@ -11,9 +11,13 @@ from config import AZURE_STORAGE_FILESYSTEM
 from app.models import UsageDataCreate , UsageDataRead
 from app.jobs.usage_data_silver import run_usage_data_silver_job
 from app.routes.building import building_exists_in_silver , load_building_silver
-
-
+from typing import List, Optional
 import re  # pour sécuriser le format de l'id building
+
+
+class UsageDataCollectionResponse(BaseModel):
+    items: List[UsageDataRead]
+    message: Optional[str] = None
 
 router = APIRouter(
     prefix="/usage-data",
@@ -122,15 +126,59 @@ def create_usage_data(payload: UsageDataCreate , background_tasks: BackgroundTas
 ##-----------------------------------------
 ##-------------Get Collection--------------
 #---------------------------------------
-@router.get("/all", response_model=list[UsageDataRead])
-def get_usage_data_collection():
-    df = load_usage_data_silver()
+#@router.get("/all", response_model=list[UsageDataRead])
+#def get_usage_data_collection():
+#    df = load_usage_data_silver()
 
     # Optionnel : tri
     # df = df.sort_values("received_at")
 
-    return df.to_dict(orient="records")
+#    return df.to_dict(orient="records")
 
+@router.get(
+    "/all",
+    response_model=UsageDataCollectionResponse,
+    summary="Lister les usage_data d’un building"
+)
+def get_usage_data_by_building(
+    id_building_primaire: str = Query(..., description="ID primaire du building")
+):
+    # 1) Vérifier building
+    if not building_exists_in_silver(id_building_primaire):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Building {id_building_primaire} introuvable en silver."
+        )
+
+    # 2) Charger silver usage_data
+    df = load_usage_data_silver()
+
+    if df.empty:
+        return {
+            "items": [],
+            "message": f"Le building {id_building_primaire} contient 0 usage_data."
+        }
+
+    if "id_building_primaire" not in df.columns:
+        raise HTTPException(
+            status_code=500,
+            detail="Colonne id_building_primaire absente du parquet silver/usage_data."
+        )
+
+    # 3) Filtrer
+    df_b = df[df["id_building_primaire"].astype(str) == str(id_building_primaire)].copy()
+    count = len(df_b)
+
+    if df_b.empty:
+        return {
+            "items": [],
+            "message": f"Le building {id_building_primaire} contient 0 usage_data."
+        }
+
+    return {
+        "items": df_b.to_dict(orient="records"),
+        "message": f"Le building {id_building_primaire} contient {count} usage_data."
+    }
 
 
 

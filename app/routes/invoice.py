@@ -1,9 +1,9 @@
 ###routes/invoices.py
 import re , io , pandas as pd
-from fastapi import APIRouter, HTTPException, status , BackgroundTasks
+from fastapi import APIRouter, HTTPException, status , BackgroundTasks, Query
 from datetime import datetime, timezone
-from typing import List
-
+from typing import List , Optional
+from pydantic import BaseModel
 from app.models import InvoiceCreate , InvoiceRead
 from app.azure_datalake import write_json_to_bronze, get_datalake_client , delete_file_from_bronze
 from config import AZURE_STORAGE_FILESYSTEM
@@ -35,6 +35,14 @@ def _load_invoice_silver_df() -> pd.DataFrame:
         return pd.DataFrame()
 
     return pd.read_parquet(io.BytesIO(raw_bytes))
+
+
+
+
+class InvoiceCollectionResponse(BaseModel):
+    items: List[InvoiceRead]
+    message: Optional[str] = None
+
 
 router = APIRouter(
     prefix="/invoice",
@@ -168,23 +176,74 @@ def create_invoice(payload: InvoiceCreate , background_tasks: BackgroundTasks):
         "received_at": received_at,
     }
 
+######################################### ########################################
+####Tous les invoices selon le deliverypoint ########################################
+####################################################################################
+#@router.get("/all", response_model=List[InvoiceRead])
+#def get_all_invoices():
+   # """   Retourne toutes les factures présentes dans silver/invoice/invoice.parquet."""
+    #df = _load_invoice_silver_df()
 
-@router.get("/all", response_model=List[InvoiceRead])
-def get_all_invoices():
-    """
-    Retourne toutes les factures présentes dans silver/invoice/invoice.parquet.
-    """
+    #if df.empty:
+     #   return []
+
+    # Tri optionnel pour plus de lisibilité
+#    if "invoice_id_primaire" in df.columns:
+#      df = df.sort_values("invoice_id_primaire")
+  #  records = df.to_dict(orient="records")
+ #   return [InvoiceRead(**r) for r in records]
+
+
+@router.get(
+    "/all",
+    response_model=InvoiceCollectionResponse,
+    summary="Lister les invoices d’un deliverypoint"
+)
+def get_invoices_by_deliverypoint(
+    deliverypoint_id_primaire: str = Query(..., description="ID primaire du deliverypoint")
+):
+    # 1) Vérifier deliverypoint
+    if not deliverypoint_exists_in_silver(deliverypoint_id_primaire):
+        raise HTTPException(
+            status_code=404,
+            detail=f"DeliveryPoint {deliverypoint_id_primaire} introuvable en silver."
+        )
+
+    # 2) Charger silver invoice
     df = _load_invoice_silver_df()
 
     if df.empty:
-        return []
+        return {
+            "items": [],
+            "message": f"Le deliverypoint {deliverypoint_id_primaire} contient 0 invoice."
+        }
 
-    # Tri optionnel pour plus de lisibilité
-    if "invoice_id_primaire" in df.columns:
-        df = df.sort_values("invoice_id_primaire")
+    if "deliverypoint_id_primaire" not in df.columns:
+        raise HTTPException(
+            status_code=500,
+            detail="Colonne deliverypoint_id_primaire absente du parquet silver/invoice."
+        )
 
-    records = df.to_dict(orient="records")
-    return [InvoiceRead(**r) for r in records]
+    # 3) Filtrer
+    df_dp = df[df["deliverypoint_id_primaire"].astype(str) == str(deliverypoint_id_primaire)].copy()
+    count = len(df_dp)
+
+    if df_dp.empty:
+        return {
+            "items": [],
+            "message": f"Le deliverypoint {deliverypoint_id_primaire} contient 0 invoice."
+        }
+
+    # (optionnel) tri lisible
+    if "invoice_id_primaire" in df_dp.columns:
+        df_dp = df_dp.sort_values("invoice_id_primaire")
+
+    return {
+        "items": df_dp.to_dict(orient="records"),
+        "message": f"Le deliverypoint {deliverypoint_id_primaire} contient {count} invoice(s)."
+    }
+
+
 
 
 @router.get("/{invoice_id_primaire}", response_model=InvoiceRead)

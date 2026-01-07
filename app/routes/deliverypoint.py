@@ -1,7 +1,9 @@
 ##routes/buildingpoints
-from fastapi import APIRouter, HTTPException , status , BackgroundTasks
+from fastapi import APIRouter, HTTPException , status , BackgroundTasks , Query
 from datetime import datetime, timezone
 import io , re
+from pydantic import BaseModel
+from typing import List, Optional
 import pandas as pd
 from app.azure_datalake import write_json_to_bronze , delete_file_from_bronze
 from app.utils import next_deliverypoint_index_for_building
@@ -19,6 +21,12 @@ from app.utils import (
 
 
 SILVER_DELIVERYPOINT_PATH = "silver/deliverypoint/deliverypoint.parquet"
+
+
+
+class DeliveryPointCollectionResponse(BaseModel):
+    items: List[DeliveryPointRead]
+    message: Optional[str] = None
 
 
 def load_deliverypoint_silver() -> pd.DataFrame:
@@ -144,18 +152,66 @@ def create_deliverypoint(payload: DeliveryPointCreate , background_tasks: Backgr
 #  GET COLLECTION
 # ------------------------
 
-@router.get("/all", response_model=list[DeliveryPointRead])
-def get_all_deliverypoints():
-    """
-    Retourne la liste de tous les deliverypoints (silver).
-    """
+#@router.get("/all", response_model=list[DeliveryPointRead])
+#def get_all_deliverypoints():
+ #   """  Retourne la liste de tous les deliverypoints (silver).  """
+  #  df = load_deliverypoint_silver()
+
+    #if df.empty:
+   #     return []
+
+    #records = df.to_dict(orient="records")
+    #return records
+
+
+
+
+@router.get(
+    "/all",
+    response_model=DeliveryPointCollectionResponse,
+    summary="Lister les deliverypoints d’un bâtiment"
+)
+def get_deliverypoints_by_building(
+    id_building_primaire: str = Query(..., description="ID primaire du bâtiment")
+):
+    # 1️⃣ Vérifier que le building existe
+    if not building_exists_in_silver(id_building_primaire):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Building {id_building_primaire} introuvable en silver."
+        )
+
+    # 2️⃣ Charger la silver deliverypoint
     df = load_deliverypoint_silver()
 
     if df.empty:
-        return []
+        return {
+            "items": [],
+            "message": f"Le building {id_building_primaire} contient 0 deliverypoint."
+        }
 
-    records = df.to_dict(orient="records")
-    return records
+    if "id_building_primaire" not in df.columns:
+        raise HTTPException(
+            status_code=500,
+            detail="Colonne id_building_primaire absente du parquet silver/deliverypoint."
+        )
+
+    # 3️⃣ Filtrer sur le building
+    df_b = df[df["id_building_primaire"].astype(str) == str(id_building_primaire)].copy()
+
+    count = len(df_b)
+
+    if df_b.empty:
+        return {
+            "items": [],
+            "message": f"Le building {id_building_primaire} contient 0 deliverypoint."
+        }
+
+    # 4️⃣ Retour OK
+    return {
+        "items": df_b.to_dict(orient="records"),
+        "message": f"Le building {id_building_primaire} contient {count} deliverypoint(s)."
+    }
 
 
 # ------------------------
