@@ -11,6 +11,16 @@ from typing import List
 
 from pydantic import BaseModel, Field, field_validator, ValidationInfo , model_validator
 
+
+
+
+
+# réutilise ton InvoiceCreate existant
+
+class InvoiceBatchCreate(BaseModel):
+    model_config = {"extra": "forbid"}
+    invoices: List["InvoiceCreate"] = Field(min_length=1)
+
 class BaseCreatedResponse(BaseModel):
     result: bool = True
     received_at: str
@@ -234,10 +244,11 @@ class ModelCoefficients(BaseModel):
 
 
 class MonthlyPredictiveConsumption(BaseModel):
-    month: str                 # "YYYY-MM"
-    real_consumption: float    # depuis invoice
-    predictive_consumption: float = 0.0  # pour l’instant toujours 0
-
+    month: str
+    real_consumption: Optional[float] = None
+    predictive_consumption: Optional[float] = None
+    confidence_lower95: Optional[float] = None
+    confidence_upper95: Optional[float] = None
 
 class DeliverypointForecastBlock(BaseModel):
     deliverypoint_id_primaire: str
