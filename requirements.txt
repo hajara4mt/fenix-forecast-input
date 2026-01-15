@@ -7,3 +7,4 @@ python-dotenv
 azure-storage-file-datalake
 pandas
 pyarrow
+statsmodels
