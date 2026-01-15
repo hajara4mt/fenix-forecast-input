@@ -57,13 +57,7 @@ def _sanitize_json(obj: Any) -> Any:
 def forecast_resultat(payload: ForecastRequest):
     building_id = payload.id_building_primaire
 
-    # 0) garder ta règle "même année" (si tu veux)
-    if payload.start_date_pred.year != payload.end_date_pred.year:
-        raise HTTPException(
-            status_code=400,
-            detail="start_date_pred et end_date_pred doivent être dans la même année.",
-        )
-
+    
     # 1) building existe ?
     if not building_exists_in_silver(building_id):
         raise HTTPException(status_code=404, detail=f"Building {building_id} introuvable en silver.")
@@ -110,7 +104,8 @@ def forecast_resultat(payload: ForecastRequest):
             end_ref=payload.end_date_ref,
             start_pred=payload.start_date_pred,
             end_pred=payload.end_date_pred,
-            month_str_max="2025-11",  # tu m'as dit qu'on garde cette condition
+            
+            
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -111,7 +111,7 @@ class InvoiceCreate(BaseModel):
     end: date     # format "YYYY-MM-DD"
 
     # montant / consommation (int, >= 0)
-    value: Annotated[int, Field(ge=0)]
+    value: int 
 
     @model_validator(mode="after")
     def check_dates(self) -> "InvoiceCreate":
@@ -190,7 +190,7 @@ class InvoiceRead(BaseModel):
     start: date
     end: date
 
-    value: Annotated[float, Field(ge=0)]
+    value: int
     received_at: datetime
 
 
