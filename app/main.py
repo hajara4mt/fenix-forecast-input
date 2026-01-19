@@ -1,7 +1,7 @@
 # app/main.py
 from fastapi import FastAPI
 
-from app.routes import building , deliverypoint ,invoice , usagedata , degreedays , resultats  , invoice_batch# importe le router qu'on vient de créer
+from app.routes import building , deliverypoint ,invoice , usagedata , degreedays , resultats  , season , invoice_batch# importe le router qu'on vient de créer
 
 app = FastAPI(
     title="FenixForecast Test API-INPUT",
@@ -22,3 +22,4 @@ app.include_router(usagedata.router)
 app.include_router(degreedays.router)
 app.include_router(resultats.router)
 app.include_router(invoice_batch.router) 
+app.include_router(season.router)

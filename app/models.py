@@ -232,15 +232,17 @@ class ACoefficient(BaseModel):
 
 class ModelCoefficients(BaseModel):
     a_coefficient: ACoefficient = Field(default_factory=ACoefficient)
-    b_coefficient: float = 0.0
-    annual_consumption_reference: float = 0.0
-    annual_ghg_emissions_reference: float = 0.0
-    ME: float = 0.0
-    RMSE: float = 0.0
-    MAE: float = 0.0
-    MPE: float = 0.0
-    MAPE: float = 0.0
-    R2: float = 0.0
+
+    b_coefficient: Optional[float] = 0.0
+    annual_consumption_reference: Optional[float] = 0.0
+    annual_ghg_emissions_reference: Optional[float] = None
+
+    ME: Optional[float] = None
+    RMSE: Optional[float] = None
+    MAE: Optional[float] = None
+    MPE: Optional[float] = None
+    MAPE: Optional[float] = None
+    R2: Optional[float] = None
 
 
 class MonthlyPredictiveConsumption(BaseModel):
@@ -261,3 +263,41 @@ class ForecastResponse(BaseModel):
     building: BuildingForecastBlock
     deliverypoints: List[DeliverypointForecastBlock]
     months_missing_by_deliverypoint: Optional[Dict[str, List[str]]] = None
+
+
+class SeasonCreate(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    name: Annotated[str, Field(min_length=1)]
+    edition_code: Annotated[str, Field(min_length=1)]
+    plateforme: Annotated[str, Field(min_length=1)]
+    start_date: date
+    end_date: date
+
+    @field_validator("end_date")
+    @classmethod
+    def validate_dates(cls, v, info: ValidationInfo):
+        start = info.data.get("start_date")
+        if start and v and start > v:
+            raise ValueError("start_date doit être <= end_date")
+        return v
+
+
+class SeasonRead(BaseModel):
+    season_id_primaire: str
+    name: str
+    edition_code: str
+    plateforme: str
+    start_date: date
+    end_date: date
+    received_at: datetime
+
+class SeasonRead1(BaseModel):
+    season_id_primaire: str
+    name: str
+    edition_code: str
+    plateforme: str
+    start_date: date
+    end_date: date
+  
+

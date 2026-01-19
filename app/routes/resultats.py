@@ -209,21 +209,32 @@ def forecast_resultat(payload: ForecastRequest):
         if not df_m.empty:
             model_row = df_m.iloc[0].to_dict()
 
+      
+      def _float_default(d: dict | None, key: str, default: float = 0.0) -> float:
+         if not d:
+           return default
+         val = d.get(key, default)
+         if val is None:
+           return default
+         try:
+           return float(val)
+         except (TypeError, ValueError):
+            return default
+
       model_coefs = ModelCoefficients(
         a_coefficient=ACoefficient(
-            hdd10=float(model_row.get("a_hdd", 0.0)) if model_row else 0.0,
-            cdd26=float(model_row.get("a_cdd", 0.0)) if model_row else 0.0,
+            hdd10=_float_default(model_row, "a_hdd", 0.0),
+            cdd26=_float_default(model_row, "a_cdd", 0.0),
         ),
-        b_coefficient=float(model_row.get("b_coefficient", 0.0)) if model_row else 0.0,
-        annual_consumption_reference=float(model_row.get("annual_consumption_reference", 0.0)) if model_row else 0.0,
-        annual_ghg_emissions_reference=float(model_row.get("annual_ghg_emissions_reference", 0.0))
-        if model_row and "annual_ghg_emissions_reference" in model_row else 0.0,
-        ME=float(model_row.get("ME", 0.0)) if model_row else 0.0,
-        RMSE=float(model_row.get("RMSE", 0.0)) if model_row else 0.0,
-        MAE=float(model_row.get("MAE", 0.0)) if model_row else 0.0,
-        MPE=float(model_row.get("MPE", 0.0)) if model_row else 0.0,
-        MAPE=float(model_row.get("MAPE", 0.0)) if model_row else 0.0,
-        R2=float(model_row.get("R2", 0.0)) if model_row else 0.0,
+        b_coefficient=_float_default(model_row, "b_coefficient", 0.0),
+    annual_consumption_reference=_float_default(model_row, "annual_consumption_reference", 0.0),
+    annual_ghg_emissions_reference=_float_default(model_row, "annual_ghg_emissions_reference", 0.0),
+    ME=_float_default(model_row, "ME", 0.0),
+    RMSE=_float_default(model_row, "RMSE", 0.0),
+    MAE=_float_default(model_row, "MAE", 0.0),
+    MPE=_float_default(model_row, "MPE", 0.0),
+    MAPE=_float_default(model_row, "MAPE", 0.0),
+    R2=_float_default(model_row, "R2", 0.0),
     )
 
       deliverypoints_blocks.append(

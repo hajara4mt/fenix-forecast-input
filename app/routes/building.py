@@ -3,6 +3,11 @@ from fastapi import APIRouter ,  BackgroundTasks , HTTPException , status
 import numpy as np  # <-- ajoute ça en haut du fichier si pas déjà fait
 from app.utils import building_business_key_exists_in_silver
 from uuid import uuid4
+from fastapi.responses import JSONResponse
+
+import math
+from typing import List
+from fastapi.encoders import jsonable_encoder
 from datetime import datetime, timezone
 from app.models import BuildingCreate, BuildingCreatedResponse, BuildingRead
 from app.azure_datalake import write_json_to_bronze , delete_file_from_bronze
@@ -269,24 +274,46 @@ def create_building(payload: BuildingCreate, background_tasks: BackgroundTasks):
 #    df = load_building_silver()
 #    return df.to_dict(orient="records")
 
-@router.get("/all", response_model=list[BuildingRead])
+def _sanitize(obj):
+    """Remplace NaN / inf dans tout objet (dict/list/nombre) par None."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, np.floating):
+        v = float(obj)
+        if math.isnan(v) or math.isinf(v):
+            return None
+        return v
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    return obj
+
+
+@router.get("/all", response_model=List[BuildingRead])
 def get_building_collection():
     df = load_building_silver()
 
     if df.empty:
         return []
 
-    # ❌ On enlève toutes les lignes où occupant est NaN
-    if "occupant" in df.columns:
-        df = df[df["occupant"].notna()]
-        # et on force le type int pour que Pydantic soit content
-        df["occupant"] = df["occupant"].astype(int)
+    # Sécurité côté DataFrame
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.where(pd.notnull(df), None)
 
-    
+    # Conversion en liste de dicts
+    records = df.to_dict(orient="records")
 
-    # 3) Conversion finale en liste de dicts
-    return df.to_dict(orient="records")
+    # Encoder façon FastAPI/Pydantic
+    encoded = jsonable_encoder(records)
 
+    # Nettoyer NaN/inf résiduels si jamais
+    safe_payload = _sanitize(encoded)
+
+    # On renvoie une JSONResponse (FastAPI ne repasse plus par json.dumps sur des NaN)
+    return JSONResponse(content=safe_payload)
     
 
 
@@ -300,7 +327,9 @@ def get_building_single(id_building_primaire: str):
     if row.empty:
         raise HTTPException(status_code=404, detail="Building non trouvé")
 
-    return row.iloc[0].to_dict()
+    data = row.iloc[0].to_dict()
+    safe_payload = _sanitize(jsonable_encoder(data))
+    return JSONResponse(content=safe_payload)
 
 ###Route de suppression de batiment 
 @router.delete("/{id_building_primaire}", status_code=200, summary="Suppression de bâtiment (cascade)")
