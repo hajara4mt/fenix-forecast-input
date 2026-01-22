@@ -54,6 +54,18 @@ def load_building_bronze() -> pd.DataFrame:
 def transform_building(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
+    
+    def _editions_to_json(v):
+     if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "[]"
+     if isinstance(v, str):
+        # si jamais déjà string
+        return v
+     try:
+        # v est typiquement une liste de dicts
+        return json.dumps(v, ensure_ascii=False)
+     except Exception:
+        return "[]"
 
     expected_cols = [
         "id_building_primaire",
@@ -71,6 +83,7 @@ def transform_building(df: pd.DataFrame) -> pd.DataFrame:
         "geographical_area",
         "occupant",
         "surface",
+        "editions",
         "reference_period_start",
         "reference_period_end",
         "weather_station",
@@ -96,6 +109,8 @@ def transform_building(df: pd.DataFrame) -> pd.DataFrame:
     # Si tu veux vraiment forcer occupant / surface à 0 quand manquants :
     df["occupant"] = df["occupant"].fillna(0)
     df["surface"] = df["surface"].fillna(0)
+    df["editions"] = df["editions"].apply(_editions_to_json)
+
 
     # plus besoin de ce check, vu qu'on a fillna(0)
     # if df["occupant"].isna().any():
@@ -109,6 +124,8 @@ def transform_building(df: pd.DataFrame) -> pd.DataFrame:
         df["reference_period_end"], errors="coerce"
     )
     df["received_at"] = pd.to_datetime(df["received_at"], errors="coerce")
+
+
 
     # ---- DÉDOUBLONNAGE ----
     df = df.sort_values(["id_building_primaire", "received_at"])

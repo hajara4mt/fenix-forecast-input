@@ -4,6 +4,7 @@ import numpy as np  # <-- ajoute ça en haut du fichier si pas déjà fait
 from app.utils import building_business_key_exists_in_silver
 from uuid import uuid4
 from fastapi.responses import JSONResponse
+import json
 
 import math
 from typing import List
@@ -33,6 +34,8 @@ from app.utils import (
 
 
 SILVER_BUILDING_PATH = "silver/building/building.parquet"
+
+
 
 ####Regarde dans bronze/building/ tous les fichiers du type building_XXXXXX.json,et retourne le plus grand numéro trouvé. Si aucun fichier, retourne 0 
 
@@ -230,9 +233,7 @@ def create_building(payload: BuildingCreate, background_tasks: BackgroundTasks):
 
     
 
-    # 1) Générer un id primaire
-    current_building_index = initialize_building_index_from_bronze() + 1
-    building_id = f"building_{current_building_index:03d}"
+    
 
     # 2) Préparer les données brutes à stocker (dict)
     received_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -292,6 +293,47 @@ def _sanitize(obj):
     return obj
 
 
+
+def _restore_editions(record: dict) -> dict:
+    """
+    Convertit la colonne 'editions' venant de la silver
+    (souvent string JSON ou None) en vraie liste pour l'API.
+    """
+    if "editions" not in record:
+        # compat backward si la colonne n'existe pas en silver
+        record["editions"] = []
+        return record
+
+    v = record.get("editions")
+
+    # déjà une liste → on touche pas
+    if isinstance(v, list):
+        return record
+
+    # None → liste vide
+    if v is None:
+        record["editions"] = []
+        return record
+
+    # string JSON → on parse
+    if isinstance(v, str):
+        try:
+            parsed = json.loads(v)
+            # sécurité : on s'assure que c'est bien une liste
+            if isinstance(parsed, list):
+                record["editions"] = parsed
+            else:
+                record["editions"] = []
+        except Exception:
+            record["editions"] = []
+        return record
+
+    # tout autre type chelou → liste vide
+    record["editions"] = []
+    return record
+
+
+
 @router.get("/all", response_model=List[BuildingRead])
 def get_building_collection():
     df = load_building_silver()
@@ -308,6 +350,7 @@ def get_building_collection():
 
     # Encoder façon FastAPI/Pydantic
     encoded = jsonable_encoder(records)
+    encoded = [_restore_editions(rec) for rec in encoded]
 
     # Nettoyer NaN/inf résiduels si jamais
     safe_payload = _sanitize(encoded)
@@ -326,9 +369,18 @@ def get_building_single(id_building_primaire: str):
 
     if row.empty:
         raise HTTPException(status_code=404, detail="Building non trouvé")
+    
+    # Sécurité NaN / inf comme dans /all (sur une seule ligne)
+    row = row.replace([np.inf, -np.inf], np.nan)
+    row = row.where(pd.notnull(row), None)
 
     data = row.iloc[0].to_dict()
-    safe_payload = _sanitize(jsonable_encoder(data))
+    # Encoder façon FastAPI/Pydantic
+    encoded = jsonable_encoder(data)
+
+    # 🔁 Restaurer editions (string JSON -> liste) avant sanitize
+    encoded = _restore_editions(encoded)
+    safe_payload = _sanitize(encoded)
     return JSONResponse(content=safe_payload)
 
 ###Route de suppression de batiment 
@@ -396,6 +448,11 @@ def update_building(id_building_primaire: str, payload: BuildingCreate):
     idx = df.index[mask][0]
 
     new_data = payload.model_dump(mode="json")
+
+     ##🔁 gérer editions : liste -> string JSON (comme en silver)
+    if "editions" in new_data and new_data["editions"] is not None:
+        new_data["editions"] = json.dumps(new_data["editions"], ensure_ascii=False)
+
     for col, value in new_data.items():
         if col in df.columns:
             df.at[idx, col] = value
@@ -411,4 +468,5 @@ def update_building(id_building_primaire: str, payload: BuildingCreate):
         "message": "Mise à jour du bâtiment réussie.",
         "id_building_primaire": id_building_primaire,
         "received_at": received_at.isoformat(),
-    }
+        
+        }

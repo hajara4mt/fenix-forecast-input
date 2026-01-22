@@ -48,6 +48,9 @@ class FluidType(str, Enum):
     cold = "cold"
     wood = "wood"
 
+class Edition(BaseModel):
+    edition_code: Annotated[str, Field(min_length=1)]
+
 
 class BuildingCreate(BaseModel):
     
@@ -70,6 +73,7 @@ class BuildingCreate(BaseModel):
     geographical_area: Optional[int] = None
     occupant: Optional[Annotated[int, Field(ge=0)]]
     surface: Optional[Annotated[int, Field(ge=0)]] = None
+    editions: List[Edition] = Field(default_factory=list)
 
     reference_period_start: Optional[date] = None
     reference_period_end: Optional[date] = None
@@ -158,6 +162,7 @@ class BuildingRead(BaseModel):
     geographical_area: Optional[int] = None
     occupant: Optional[int] = None
     surface: Optional[float] = None
+    editions: List[Edition] = Field(default_factory=list)
     reference_period_start: Optional[date] = None
     reference_period_end: Optional[date] = None
     weather_station: Optional[str] = None
