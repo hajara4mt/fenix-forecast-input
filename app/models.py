@@ -49,7 +49,16 @@ class FluidType(str, Enum):
     wood = "wood"
 
 class Edition(BaseModel):
-    edition_code: Annotated[str, Field(min_length=1)]
+    season_id_primaire: Annotated[str, Field(min_length=1)]
+
+
+
+class ForecastSeasonRequest(BaseModel):
+    id_building_primaire: str
+    start_date_ref: date
+    end_date_ref: date
+
+
 
 
 class BuildingCreate(BaseModel):
@@ -306,3 +315,28 @@ class SeasonRead1(BaseModel):
     end_date: date
   
 
+class MonthlySeasonPrediction(BaseModel):
+    month: str                       # "2023-06-01"
+    real_consumption: Optional[float] = None
+    predictive_consumption: Optional[float] = None
+    confidence_lower95: Optional[float] = None
+    confidence_upper95: Optional[float] = None
+
+
+class EditionForecastBlock(BaseModel):
+    id_edition_primaire: str         # on met season_id_primaire ou edition_code
+    model_coefficients: ModelCoefficients
+    predictions: List[MonthlySeasonPrediction]
+
+
+class DeliverypointSeasonForecastBlock(BaseModel):
+    deliverypoint_id_primaire: str
+    predictive_consumption: List[EditionForecastBlock]
+
+
+class ForecastSeasonResponse(BaseModel):
+    id_building_primaire: str
+    building: BuildingForecastBlock
+    deliverypoints: List[DeliverypointSeasonForecastBlock]
+    months_missing_by_deliverypoint: Optional[Dict[str, List[str]]] = None
+    message_seasons: Optional[str] = None
