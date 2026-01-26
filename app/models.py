@@ -240,8 +240,8 @@ class BuildingForecastBlock(BaseModel):
 
 
 class ACoefficient(BaseModel):
-    hdd10: float = 0.0
-    cdd26: float = 0.0
+    hdd10: Optional[float] = None
+    cdd26: Optional[float] = None
 
 
 class ModelCoefficients(BaseModel):
