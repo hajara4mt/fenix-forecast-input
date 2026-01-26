@@ -1,13 +1,5 @@
-<<<<<<< HEAD
-algo-prediction @ git+https://github.com/hajara4mt/algo-prediction.git@bd3498f45b29af2e4793367488f46b7d91830e37
-<<<<<<< HEAD
-
-=======
->>>>>>> 169c862 (Fix: force datetime after concat to avoid .dt accessor error)
-fastapi
-=======
 algo-prediction @ git+https://github.com/hajara4mt/algo-prediction.git@de8ac0bd06d42966c6e2591f96862c182240fad5
->>>>>>> 1493f4f (Use fixed algo-prediction version with datetime fix)
+fastapi
 uvicorn
 pydantic
 degreedays
