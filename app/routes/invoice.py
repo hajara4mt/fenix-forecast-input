@@ -8,7 +8,7 @@ from app.models import InvoiceCreate , InvoiceRead
 from app.azure_datalake import write_json_to_bronze, get_datalake_client , delete_file_from_bronze
 from config import AZURE_STORAGE_FILESYSTEM
 from app.jobs.invoice_silver import run_invoice_silver_job
-from app.utils import deliverypoint_exists_in_silver
+from app.utils import deliverypoint_exists_in_silver , random_token
 
 
 SILVER_INVOICE_PATH = "silver/invoice/invoice.parquet"
@@ -52,41 +52,17 @@ router = APIRouter(
 
 def parse_deliverypoint_id(dp_id: str):
     parts = dp_id.split("_")
-    if len(parts) != 3:
-        raise ValueError("deliverypoint_id_primaire invalide")
-    return parts[1], parts[2]  # buildingSuffix, deliverypointSuffix
+    # attendu : deliverypoint_<BID>_<DPID>
+    if len(parts) != 3 or parts[0] != "deliverypoint":
+        raise ValueError(
+            "deliverypoint_id_primaire invalide. "
+            "Forme attendue : deliverypoint_<BID>_<DPID> "
+            "(ex: deliverypoint_01JH3QD_4C42)."
+        )
+    return parts[1], parts[2]  # building_token, dp_token
 
 
-def get_next_invoice_index(building_suffix: str, dp_suffix: str) -> int:
 
-    expected_prefix = f"invoice_{building_suffix}_{dp_suffix}_"
-
-    service = get_datalake_client()
-    fs = service.get_file_system_client(AZURE_STORAGE_FILESYSTEM)
-
-    try:
-        paths = fs.get_paths("bronze/invoice")
-    except Exception:
-        return 1  # aucun fichier → première facture
-
-    pattern = re.compile(
-        rf"invoice_{building_suffix}_{dp_suffix}_(\d+)\.json"
-    )
-
-    max_idx = 0
-
-    for p in paths:
-        if p.is_directory:
-            continue
-
-        filename = p.name.split("/")[-1]
-        match = pattern.match(filename)
-
-        if match:
-            idx = int(match.group(1))
-            max_idx = max(max_idx, idx)
-
-    return max_idx + 1
 
 def _save_invoice_silver_df(df: pd.DataFrame) -> None:
     """
@@ -137,20 +113,31 @@ def delete_invoices_for_deliverypoint(dp_id: str) -> int:
 @router.put("/create", status_code=status.HTTP_201_CREATED)
 def create_invoice(payload: InvoiceCreate , background_tasks: BackgroundTasks):
 
+       # 0) Vérifier que le deliverypoint existe bien en silver
+    if not deliverypoint_exists_in_silver(payload.deliverypoint_id_primaire):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Le deliverypoint {payload.deliverypoint_id_primaire} n'existe pas en silver. "
+                "Merci de le créer avant d'ajouter une invoice."
+            ),
+        )
+
+    # 1) Récupérer les tokens building / dp depuis le deliverypoint_id_primaire
     try:
-        building_suffix, dp_suffix = parse_deliverypoint_id(
+        building_token, dp_token = parse_deliverypoint_id(
             payload.deliverypoint_id_primaire
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # compute next invoice index
-    next_invoice_idx = get_next_invoice_index(building_suffix, dp_suffix)
+    # 2) Générer un token pour l'invoice, ex: A9F3 (4 caractères)
+    inv_token = random_token(4)
 
-    # build invoice id
-    invoice_id = (
-        f"invoice_{building_suffix}_{dp_suffix}_{next_invoice_idx:02d}"
-    )
+    # 3) Construire l'id primaire de l'invoice :
+    #    invoice_<BID>_<DPID>_<IID>
+    #    ex : invoice_01JH3QD_4C42_A9F3
+    invoice_id = f"invoice_{building_token}_{dp_token}_{inv_token}"
 
     # timestamp
     received_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -176,22 +163,6 @@ def create_invoice(payload: InvoiceCreate , background_tasks: BackgroundTasks):
         "received_at": received_at,
     }
 
-######################################### ########################################
-####Tous les invoices selon le deliverypoint ########################################
-####################################################################################
-#@router.get("/all", response_model=List[InvoiceRead])
-#def get_all_invoices():
-   # """   Retourne toutes les factures présentes dans silver/invoice/invoice.parquet."""
-    #df = _load_invoice_silver_df()
-
-    #if df.empty:
-     #   return []
-
-    # Tri optionnel pour plus de lisibilité
-#    if "invoice_id_primaire" in df.columns:
-#      df = df.sort_values("invoice_id_primaire")
-  #  records = df.to_dict(orient="records")
- #   return [InvoiceRead(**r) for r in records]
 
 
 @router.get(
@@ -325,15 +296,15 @@ def update_invoice(invoice_id_primaire: str, payload: InvoiceCreate):
 
     # 0) Vérifier la forme de deliverypoint_id_primaire SI on le met à jour
     if payload.deliverypoint_id_primaire is not None:
-        if not re.fullmatch(r"deliverypoint_\d{3}_\d{3}", payload.deliverypoint_id_primaire):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "Format invalide pour deliverypoint_id_primaire. "
-                    "La forme attendue est : deliverypoint_XXX_YYY "
-                    "(3 chiffres pour le building, 3 pour l'index)."
-                ),
-            )
+     if not re.fullmatch(r"deliverypoint_[A-Za-z0-9]+_[A-Za-z0-9]+", payload.deliverypoint_id_primaire):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Format invalide pour deliverypoint_id_primaire. "
+                "La forme attendue est : deliverypoint_<BID>_<DPID> "
+                "(ex: deliverypoint_01JH3QD_4C42)."
+            ),
+        )
     
     if not deliverypoint_exists_in_silver(payload.deliverypoint_id_primaire):
             raise HTTPException(

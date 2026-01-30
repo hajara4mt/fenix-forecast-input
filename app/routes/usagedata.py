@@ -12,6 +12,8 @@ from app.models import UsageDataCreate , UsageDataRead
 from app.jobs.usage_data_silver import run_usage_data_silver_job
 from app.routes.building import building_exists_in_silver , load_building_silver
 from typing import List, Optional
+from app.utils import random_token
+
 import re  # pour sécuriser le format de l'id building
 
 
@@ -70,32 +72,41 @@ def save_usage_data_silver(df: pd.DataFrame) -> None:
 
 
 
-# compteur par building : { "003": 1, "004": 5, ... }
-usage_index_by_building: dict[str, int] = {}
-
 
 @router.put("/create", status_code=201)
 def create_usage_data(payload: UsageDataCreate , background_tasks: BackgroundTasks):
-    """On crée un nouveau id de usage data de la forme  : usage_data_{buildingIndex}_{usageIndexPourCeBuilding}"""
-    global usage_index_by_building
 
     # 1) vérifier / extraire l'index du building
     building_id = payload.id_building_primaire  # ex: "building_003"
-    match = re.fullmatch(r"building_(\d+)", building_id)
-    if not match:
+     # 0) vérifier que le building existe bien en silver
+    if not building_exists_in_silver(building_id):
         raise HTTPException(
             status_code=400,
-            detail=f"id_building_primaire invalide (attendu 'building_XXX') : {building_id}",
+            detail=(
+                f"Le building {building_id} n'existe pas en silver. "
+                "Merci de le créer avant d'ajouter des usage_data."
+            ),
         )
+    
+     # 1) extraire le token du building : building_01JH3QD -> 01JH3QD
+    try:
+        prefix, building_token = building_id.split("building_", 1)
+        if not building_token:
+            raise ValueError
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Format invalide pour id_building_primaire. "
+                "La forme attendue est : building_<TOKEN> (ex: building_01JH3QD)."
+            ),
+        )
+    
+     # 2) générer un token aléatoire pour usage_data, ex: A9F3
+    usage_token = random_token(4)
 
-    building_index = match.group(1)  # "003"
-
-    # 2) déterminer l'index d'usage pour CE building
-    current_usage_index = usage_index_by_building.get(building_index, 0) + 1
-    usage_index_by_building[building_index] = current_usage_index
-
-    # 3) construire l'id usage : usage_data_003_001
-    usage_id = f"usage_data_{building_index}_{current_usage_index:03d}"
+    # 3) construire l'id usage : usage_data_01JH3QD_A9F3
+    usage_id = f"usage_data_{building_token}_{usage_token}"
 
     # 4) timestamp
     received_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -259,26 +270,26 @@ def delete_usage_data(usage_data_id_primaire: str):
 @router.patch("/update/{usage_data_id_primaire}", status_code=200)
 def update_usage_data(usage_data_id_primaire: str, payload: UsageDataCreate):
 
-    # 🔎 0) Vérifier la forme de id_building_primaire SI on le met à jour
     if payload.id_building_primaire is not None:
-        if not re.fullmatch(r"building_\d{3}", payload.id_building_primaire):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Format invalide pour id_building_primaire. "
-                    "La forme attendue est : building_XXX (3 chiffres)."
-                ),
-            )
-        
-     # 0.b) existence dans la silver building
+        if not re.fullmatch(r"building_[A-Za-z0-9]+", payload.id_building_primaire):
+          raise HTTPException(
+            status_code=400,
+            detail=(
+                "Format invalide pour id_building_primaire. "
+                "La forme attendue est : building_<TOKEN> (ex: building_01JH3QD)."
+            ),
+        )
+
+    # 0.b) existence dans la silver building
         if not building_exists_in_silver(payload.id_building_primaire):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Le id_building_primaire fourni n'existe pas en silver. "
-                    "Merci de créer d'abord le building correspondant."
-                ),
-            )
+          raise HTTPException(
+            status_code=400,
+            detail=(
+                "Le id_building_primaire fourni n'existe pas en silver. "
+                "Merci de créer d'abord le building correspondant."
+            ),
+        )
+ 
     
     df = load_usage_data_silver()
 

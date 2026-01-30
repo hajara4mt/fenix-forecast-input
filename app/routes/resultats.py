@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 import traceback
-
 from fastapi import APIRouter, HTTPException
 from typing import List, Dict, Optional
 import pandas as pd
@@ -113,7 +112,7 @@ def forecast_resultat(payload: ForecastRequest):
     except Exception as e:
         traceback.print_exc()  # 🔥 log complet dans les logs Azure
         raise HTTPException(status_code=500, detail=f"Algo failed: {e}")
-
+      
     # 4) construire DataFrames depuis out
     # out["results"] : lignes predictions_monthly
     # out["models"]  : lignes models

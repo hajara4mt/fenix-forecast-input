@@ -86,6 +86,7 @@ class BuildingCreate(BaseModel):
 
     reference_period_start: Optional[date] = None
     reference_period_end: Optional[date] = None
+    
     weather_station: Optional[str] = None
 
     @field_validator("reference_period_end")
@@ -124,7 +125,7 @@ class InvoiceCreate(BaseModel):
     end: date     # format "YYYY-MM-DD"
 
     # montant / consommation (int, >= 0)
-    value: int 
+    value: float 
 
     @model_validator(mode="after")
     def check_dates(self) -> "InvoiceCreate":
@@ -204,7 +205,7 @@ class InvoiceRead(BaseModel):
     start: date
     end: date
 
-    value: int
+    value: float
     received_at: datetime
 
 

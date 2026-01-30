@@ -1,5 +1,7 @@
 from uuid import uuid4
 from datetime import datetime, timezone
+import secrets
+import string
 
 import re
 from app.azure_datalake import get_datalake_client, AZURE_STORAGE_FILESYSTEM
@@ -9,6 +11,15 @@ def new_id() -> str:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+ALPHABET = string.ascii_uppercase + string.digits  # ex: 0-9 + A-Z
+
+def random_token(length: int = 5) -> str:
+    """
+    Génère un petit token aléatoire, ex: '01JH3QD'
+    """
+    return ''.join(secrets.choice(ALPHABET) for _ in range(length))
 
 
 def next_deliverypoint_index_for_building(building_id: str) -> int:

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import numpy as np
 from azure.core.exceptions import ResourceNotFoundError
-
+from app.utils import random_token
 from app.azure_datalake import get_datalake_client, write_json_to_bronze
 from config import AZURE_STORAGE_FILESYSTEM
 from app.models import SeasonCreate, SeasonRead , SeasonRead1
@@ -58,32 +58,43 @@ def save_season_silver(df: pd.DataFrame) -> None:
     file_client.upload_data(data, overwrite=True)
 
 
-# compteur global saison: season_001, season_002, ...
-season_index: int = 0
-
-
 @router.put("/create", status_code=201)
 def create_season(payload: SeasonCreate, background_tasks: BackgroundTasks):
-    global season_index
+     # 0) cohérence simple : start <= end
+    if payload.start_date > payload.end_date:
+        raise HTTPException(
+            status_code=400,
+            detail="La date de début de saison doit être <= à la date de fin.",
+        )
 
-    season_index += 1
-    season_id = f"season_{season_index:03d}"
+    # 1) générer un token aléatoire pour la saison
+    season_token = random_token(5)  # même longueur que building
+    season_id = f"season_{season_token}"
 
+    # 2) horodatage
     received_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    # 3) payload → dict JSON-friendly
     raw = payload.model_dump(mode="json")
     raw["season_id_primaire"] = season_id
     raw["received_at"] = received_at
 
+    # 4) écrire en bronze : bronze/season/season_01JH3QD.json
     write_json_to_bronze(
         entity="season",
         file_name=f"{season_id}.json",
         data=raw,
     )
 
+    # 5) lancer le job bronze -> silver
     background_tasks.add_task(run_season_silver_job)
 
-    return {"result": True, "season_id_primaire": season_id, "received_at": received_at}
+    return {
+        "result": True,
+        "season_id_primaire": season_id,
+        "received_at": received_at,
+    }
+
 
 
 @router.get("/all", response_model=list[SeasonRead])
@@ -137,22 +148,54 @@ def delete_season(season_id_primaire: str):
 def update_season(season_id_primaire: str, payload: SeasonCreate):
     df = load_season_silver()
     if df.empty or "season_id_primaire" not in df.columns:
-        raise HTTPException(status_code=404, detail="Aucune donnée season en silver")
+        raise HTTPException(
+            status_code=404,
+            detail="Aucune donnée season en silver"
+        )
 
     mask = df["season_id_primaire"] == season_id_primaire
     if not mask.any():
-        raise HTTPException(status_code=404, detail="Saison non trouvée")
+        raise HTTPException(
+            status_code=404,
+            detail="Saison non trouvée"
+        )
 
     idx = df.index[mask][0]
 
-    new_data = payload.model_dump(mode="json")
+    # 🔎 (optionnel mais recommandé) cohérence des dates
+    # adapte les noms si ton SeasonCreate utilise start_date / end_date
+    if hasattr(payload, "start_date") and hasattr(payload, "end_date"):
+        if payload.start_date > payload.end_date:
+            raise HTTPException(
+                status_code=400,
+                detail="start_date doit être <= end_date pour une saison.",
+            )
+
+    # ⚠️ IMPORTANT : mode="python" pour garder les types (date, etc.),
+    # pas mode="json" qui met tout en str
+    new_data = payload.model_dump(mode="python")
+
     for col, value in new_data.items():
         if col in df.columns:
             df.at[idx, col] = value
 
+    # on garde le même id primaire
     df.at[idx, "season_id_primaire"] = season_id_primaire
-    df.at[idx, "received_at"] = datetime.now(timezone.utc)
+
+    # horodatage de mise à jour
+    now_dt = datetime.now(timezone.utc)
+    df.at[idx, "received_at"] = now_dt
+
+    # (optionnel mais très safe si tu veux forcer les types)
+    # si tes colonnes s'appellent start_date / end_date en silver :
+    # df["start_date"] = pd.to_datetime(df["start_date"]).dt.date
+    # df["end_date"] = pd.to_datetime(df["end_date"]).dt.date
 
     save_season_silver(df)
 
-    return {"result": True, "message": "Saison mise à jour.", "season_id_primaire": season_id_primaire}
+    return {
+        "result": True,
+        "message": "Saison mise à jour.",
+        "season_id_primaire": season_id_primaire,
+        "received_at": now_dt.isoformat(),
+    }

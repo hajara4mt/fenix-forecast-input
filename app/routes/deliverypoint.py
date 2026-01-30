@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 import pandas as pd
 from app.azure_datalake import write_json_to_bronze , delete_file_from_bronze
-from app.utils import next_deliverypoint_index_for_building
+from app.utils import random_token  
 from app.azure_datalake import get_datalake_client, AZURE_STORAGE_FILESYSTEM
 from app.models import DeliveryPointCreate, DeliveryPointRead
 from app.jobs.deliverypoint_silver import run_deliverypoint_silver_job
@@ -99,18 +99,67 @@ def create_deliverypoint(payload: DeliveryPointCreate , background_tasks: Backgr
     # 1) on récupère l'id du building
     building_id = payload.id_building_primaire
 
+    if not building_exists_in_silver(building_id):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Le building {building_id} n'existe pas en silver. "
+                "Merci de le créer avant d'ajouter un deliverypoint."
+            ),
+        )
+    
+    df_dp = load_deliverypoint_silver()
+
+    if not df_dp.empty:
+        required_cols = {
+            "id_building_primaire",
+            "deliverypoint_code",
+            "deliverypoint_number",
+        }
+        if not required_cols.issubset(df_dp.columns):
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Schéma silver/deliverypoint incomplet : "
+                    "Les colonnes id_building_primaire, deliverypoint_code, deliverypoint_number sont necessaires"
+                ),
+            )
+
+        mask = (
+            df_dp["id_building_primaire"].astype(str) == str(building_id)
+        ) & (
+            df_dp["deliverypoint_code"].astype(str) == str(payload.deliverypoint_code)
+        ) & (
+            df_dp["deliverypoint_number"].astype(str) == str(payload.deliverypoint_number)
+        )
+        
+        if mask.any():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Deliverypoint déjà existant pour ce building "
+                    "(même id_building_primaire, deliverypoint_code et deliverypoint_number)"
+                ),
+            )
+
     try:
         # 2) on calcule le prochain index pour ce building
-        next_idx = next_deliverypoint_index_for_building(building_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # building_id = 'building_000003' -> '000003'
-    building_suffix = building_id.split("_", 1)[1]
-
-    # 3) on construit l'id primaire du deliverypoint
-    #    ex: deliverypoint_000003_001
-    deliverypoint_id = f"deliverypoint_{building_suffix}_{next_idx:03d}"
+        prefix, building_token = building_id.split("building_", 1)
+        if not building_token:
+            raise ValueError
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Format invalide pour id_building_primaire. "
+                "La forme attendue est : building_<TOKEN> (ex: building_01JH3QD)."
+            ),)
+     # 3) générer un token aléatoire pour le deliverypoint, ex: 4C42
+    dp_token = random_token(4)
+    
+    # 4) construire l'id primaire du deliverypoint
+    #    ex: deliverypoint_01JH3QD_4C42
+    deliverypoint_id = f"deliverypoint_{building_token}_{dp_token}"
 
     # 4) timestamp
     received_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -134,17 +183,8 @@ def create_deliverypoint(payload: DeliveryPointCreate , background_tasks: Backgr
     return {
         "result": True,
         "deliverypoint_id_primaire": deliverypoint_id,
-        "received_at": received_at,
-        "MAE": "à calculer",
-        "MAPE": "à calculer",
-        "ME": "à calculer",
-        "MPE": "à calculer",
-        "R2": "à calculer",
-        "RMSE": "à calculer",
-        "consumption_reference": "à calculer",
-        "a_coefficient_CDD": "à calculer",
-        "a_coefficient_HDD": "à calculer",
-        "b_coefficient": "à calculer"
+        "received_at": received_at
+        
     }
 
 
@@ -285,14 +325,15 @@ def update_deliverypoint(
       # 🔎 0) Vérifier la forme de id_building_primaire SI on le met à jour
     # (DeliveryPointCreate a forcément ce champ, donc on le valide)
     if payload.id_building_primaire is not None:
-        if not re.fullmatch(r"building_\d{3}", payload.id_building_primaire):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "Format invalide pour id_building_primaire. "
-                    "La forme attendue est : building_XXX (3 chiffres)."
-                ),
-            )
+        if not re.fullmatch(r"building_[A-Z0-9]{5}", payload.id_building_primaire):
+          raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Format invalide pour id_building_primaire. "
+                "La forme attendue est : building_<TOKEN> "
+                "(ex: building_01JQD)."
+            ),
+        )
         
     # 0.b) existence dans la silver building
         if not building_exists_in_silver(payload.id_building_primaire):

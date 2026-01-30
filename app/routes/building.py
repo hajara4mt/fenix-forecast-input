@@ -1,7 +1,7 @@
 # app/routers/building.py
 from fastapi import APIRouter ,  BackgroundTasks , HTTPException , status
 import numpy as np  # <-- ajoute ça en haut du fichier si pas déjà fait
-from app.utils import building_business_key_exists_in_silver
+from app.utils import building_business_key_exists_in_silver , random_token
 from uuid import uuid4
 from fastapi.responses import JSONResponse
 import json
@@ -15,6 +15,7 @@ from app.azure_datalake import write_json_to_bronze , delete_file_from_bronze
 import pandas as pd
 from app.azure_datalake import get_datalake_client
 from config import AZURE_STORAGE_FILESYSTEM
+
 import re
 from app.jobs.building_silver import run_building_silver_job
 from app.jobs.degreedays_silver import ensure_degreedays_for_station
@@ -37,90 +38,14 @@ SILVER_BUILDING_PATH = "silver/building/building.parquet"
 
 
 
-####Regarde dans bronze/building/ tous les fichiers du type building_XXXXXX.json,et retourne le plus grand numéro trouvé. Si aucun fichier, retourne 0 
 
-def initialize_building_index_from_bronze() -> int:
-    service = get_datalake_client()
-    fs = service.get_file_system_client(AZURE_STORAGE_FILESYSTEM)
-
-    max_index = 0
-
-    try:
-        paths = fs.get_paths("bronze/building")
-    except Exception as e:
-        print(f"⚠️ Impossible de lister bronze/building : {e}")
-        return 0
-
-    pattern = re.compile(r"building_(\d{3})\.json")
-
-    for p in paths:
-        if p.is_directory:
-            continue
-
-        filename = p.name.split("/")[-1]
-        match = pattern.match(filename)
-        if match:
-            num_str = match.group(1)
-            try:
-                num = int(num_str)
-                if num > max_index:
-                    max_index = num
-            except ValueError:
-                continue
-
-    return max_index
-
-##lire les jsons du Datalak 
-
-# load_building_silver() -> pd.DataFrame:
-    service = get_datalake_client()
-    fs = service.get_file_system_client(AZURE_STORAGE_FILESYSTEM)
-    file = fs.get_file_client(SILVER_BUILDING_PATH)
-
-    data = file.download_file().readall()
-    with open("tmp_building_silver.parquet", "wb") as f:
-        f.write(data)
-
-    return pd.read_parquet("tmp_building_silver.parquet")
-
-
-
-#def save_building_silver(df):
+def generate_building_primaire_id() -> str:
     """
-    Réécrit tout le parquet silver/building/building.parquet
-    à partir du DataFrame fourni.
+    Génère un id_building_primaire du type:
+    building_01JH3QD
     """
-    # écrire en local
-    tmp_path = "tmp_building_silver.parquet"
-    df.to_parquet(tmp_path, index=False)
-
-    # uploader vers ADLS
-    service = get_datalake_client()
-    fs = service.get_file_system_client(AZURE_STORAGE_FILESYSTEM)
-    file = fs.get_file_client(SILVER_BUILDING_PATH)
-
-    with open(tmp_path, "rb") as f:
-        data = f.read()
-
-    file.upload_data(data, overwrite=True)
-
-
-## chemin de test de presence d'un id building dans la silver 
-#def building_exists_in_silver(building_id: str) -> bool:
-    """
-    Retourne True si id_building_primaire existe dans la silver building.
-    """
-    try:
-        df_building = load_building_silver()
-    except Exception:
-        return False
-
-    if df_building.empty or "id_building_primaire" not in df_building.columns:
-        return False
-
-    return building_id in df_building["id_building_primaire"].values
-
-
+    token = random_token(5)
+    return f"building_{token}"
 
 router = APIRouter(
     prefix="/building",
@@ -213,7 +138,7 @@ router = APIRouter(
 ## Création de batiment et mise en place d'un ID_primaire 
 @router.put("/create", status_code=201)
 def create_building(payload: BuildingCreate, background_tasks: BackgroundTasks):
-    global current_building_index
+    
 
 
     # ✅ PRE-CHECK silver : (platform_code, building_code)
@@ -228,12 +153,8 @@ def create_building(payload: BuildingCreate, background_tasks: BackgroundTasks):
         )
 
     # 1) Générer un id primaire
-    current_building_index = initialize_building_index_from_bronze() + 1
-    building_id = f"building_{current_building_index:03d}"
-
     
-
-    
+    building_id = generate_building_primaire_id()
 
     # 2) Préparer les données brutes à stocker (dict)
     received_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
