@@ -2,7 +2,7 @@ from typing import Optional , List , Dict
 from datetime import date , datetime
 from typing import Annotated
 from enum import Enum
-from typing import List
+from typing import List , Any
 
 
 
@@ -278,6 +278,8 @@ class ForecastResponse(BaseModel):
     building: BuildingForecastBlock
     deliverypoints: List[DeliverypointForecastBlock]
     months_missing_by_deliverypoint: Optional[Dict[str, List[str]]] = None
+    outliers_details: Optional[List[Dict[str, Any]]] = None
+    outliers_notes: Optional[List[str]] = None
 
 
 class SeasonCreate(BaseModel):
@@ -340,4 +342,5 @@ class ForecastSeasonResponse(BaseModel):
     building: BuildingForecastBlock
     deliverypoints: List[DeliverypointSeasonForecastBlock]
     months_missing_by_deliverypoint: Optional[Dict[str, List[str]]] = None
-    message_seasons: Optional[str] = None
+   # message_seasons: Optional[str] = None
+    
